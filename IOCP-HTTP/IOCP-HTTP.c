@@ -21,6 +21,7 @@ static struct socket_server *default_server = NULL;
 
 typedef void(__stdcall* iocp_callback_dns)(struct socket_server * ss, void *ud, int state, char *ip);
 typedef void(__stdcall* iocp_callback_connect)(struct socket_server * ss, void *ud, int state, int fd);
+typedef void(__stdcall* iocp_callback_data)(struct socket_server * ss, void *ud, int state, char *data, uint32_t len);
 typedef void(__stdcall* iocp_callback_free)(struct socket_server * ss, void *ud);
 //IO服务定义
 struct socket_server {
@@ -62,6 +63,8 @@ struct request_recv {
     WSABUF buf;
     size_t RecvBytes;   //实际接收长度
     SOCKET fd;
+    void *ud;
+    iocp_callback_data cb;
 };
 //关闭连接请求
 struct request_close {
@@ -179,38 +182,20 @@ static int __stdcall IOCP_Thread(struct socket_server * ss) {
             //连接成功,投递接收请求
             if (pOverlapped->u.connect.cb)
                 pOverlapped->u.connect.cb(ss, pOverlapped->u.connect.ud, 0, pOverlapped->u.connect.fd);
-            //投递一个请求
-            IO_DATA *msg = malloc(sizeof(*msg));
-            memset(msg, 0, sizeof(*msg));
-            msg->Type = 'R';
-            msg->u.recv.fd = pOverlapped->u.connect.fd;
-            msg->u.recv.buf.len = 8192;
-            msg->u.recv.buf.buf = malloc(8192);
-
-            //投递一个接收请求
-            DWORD dwBufferCount = 1, dwRecvBytes = 0, Flags = 0;
-            if (WSARecv(pOverlapped->u.connect.fd, &msg->u.recv.buf, 1, &msg->u.recv.RecvBytes, &Flags, (LPWSAOVERLAPPED)msg, NULL) == SOCKET_ERROR) {
-                int err = WSAGetLastError();
-                if (err != WSA_IO_PENDING)
-                {
-                    //套接字错误
-                    free(msg->u.recv.buf.buf);
-                    free(msg);
-                }
-            }
             break;
         }
         case 'R'://收到数据
         {
-
-
             if (dwBytesTransfered == 0) {
                 //被主动断开?
-
 
                 free(pOverlapped->u.recv.buf.buf);
                 closesocket(pOverlapped->u.recv.fd);
                 break;
+            }
+            else {
+                if (pOverlapped->u.recv.cb)
+                    pOverlapped->u.recv.cb(ss, pOverlapped->u.recv.ud, 0, pOverlapped->u.recv.buf.buf, dwBytesTransfered);
             }
 
 
@@ -358,6 +343,30 @@ __declspec(dllexport) void __stdcall TOCP_Connect(struct socket_server * ss, con
     lpfnConnectEx(fd, (struct sockaddr *)&addrPeer, sizeof(addrPeer), 0, 0, &lpSendBuffer, msg);
     return;
 }
+//IOCP开始接受数据
+__declspec(dllexport) void __stdcall TOCP_Start(struct socket_server *ss, SOCKET fd, iocp_callback_data cb, void *ud) {
+    //投递一个请求
+    IO_DATA *msg = malloc(sizeof(*msg));
+    memset(msg, 0, sizeof(*msg));
+    msg->Type = 'R';
+    msg->u.recv.fd = fd;
+    msg->u.recv.buf.len = 8192;
+    msg->u.recv.buf.buf = malloc(8192);
+    msg->u.recv.cb = cb;
+    msg->u.recv.ud = ud;
+
+    //投递一个接收请求
+    DWORD dwBufferCount = 1, dwRecvBytes = 0, Flags = 0;
+    if (WSARecv(fd, &msg->u.recv.buf, 1, &msg->u.recv.RecvBytes, &Flags, (LPWSAOVERLAPPED)msg, NULL) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err != WSA_IO_PENDING)
+        {
+            //套接字错误
+            free(msg->u.recv.buf.buf);
+            free(msg);
+        }
+    }
+}
 //IOCP发送数据
 __declspec(dllexport) void __stdcall TOCP_Send(struct socket_server *ss, SOCKET fd, void *buffer, int sz, iocp_callback_free cb, void *ud) {
     IO_DATA *msg = malloc(sizeof(*msg));
@@ -391,19 +400,39 @@ __declspec(dllexport) void __stdcall IOCP_UnInit() {
 static void __stdcall HTTP_CB_Free(struct socket_server * ss, sds s) {
     sdsfree(s);
 }
+int a = 0;
+int b = 0;
+static void __stdcall HTTP_CB_Data(struct socket_server * ss, struct http_request *request, int state, char *data, uint32_t len) {
+    //printf("%d\r\n", a);
+    a++;
+    if (a == 2000) {
+        printf("%d\r\n", GetTickCount() - b);
+    }
+}
 //连接
 static void __stdcall HTTP_CB_Connect(struct socket_server * ss, struct http_request *request, int state, int fd) {
     if (state) {
         //异常
-
     }
+    //接收数据
+    TOCP_Start(ss, fd, HTTP_CB_Data, request);
     //生成数据
-    sds s = sdscatprintf(
-        sdsempty(),
+    sds s = sdscatprintf(sdsempty(),
         "%s /%s HTTP/%d.%d\r\n"
         "\r\n",
-        request->method, request->path ? request->path : "", request->http_major, request->http_minor
-    );
+        request->method, request->path ? request->path : "", request->http_major, request->http_minor);
+
+    struct http_header *header = request->header;
+    while (header)
+    {
+        s = sdscatprintf(s,
+            "%s: %s\r\n",
+            header->k, header->v);
+        header = header->next;
+    }
+
+    s = sdscatprintf(s,
+        "\r\n\r\n");
     //发送数据
     TOCP_Send(ss, fd, s, sdslen(s), HTTP_CB_Free, s);
 }
@@ -441,7 +470,36 @@ __declspec(dllexport) struct http_request * __stdcall HTTP_Request_New() {
 
     return request;
 }
-
+//设置请求头
+__declspec(dllexport) void __stdcall HTTP_Request_SetHeader(struct http_request *request, char *k, char *v) {
+    if (!request || !k || !v)
+        return;
+    struct http_header *header = request->header;
+    struct http_header *header_old = header;
+    while (header)
+    {
+        if (strcmp(header->k, k) == 0) {
+            if (header->v)
+                free(header->v);
+            header->v = strdup(v);
+        }
+        header_old = header;
+        header = header->next;
+    }
+    if (header_old == NULL)
+    {
+        request->header = malloc(sizeof(struct http_header));
+        request->header->k = strdup(k);
+        request->header->v = strdup(v);
+        request->header->next = NULL;
+    }
+    else {
+        header_old->next = malloc(sizeof(struct http_header));
+        header_old->next->k = strdup(k);
+        header_old->next->v = strdup(v);
+        header_old->next->next = NULL;
+    }
+}
 //打开请求
 __declspec(dllexport) void __stdcall HTTP_Request_Open(struct http_request *request,char * method, char * url) {
     if (!request || !url)
@@ -460,6 +518,7 @@ __declspec(dllexport) void __stdcall HTTP_Request_Open(struct http_request *requ
     request->http_minor = 1;
     request->method = strdup(method);
     
+    HTTP_Request_SetHeader(request, "Host", request->host);
 }
 //发送请求
 __declspec(dllexport) void __stdcall HTTP_Request_Send(struct http_request *request) {
@@ -469,6 +528,7 @@ __declspec(dllexport) void __stdcall HTTP_Request_Send(struct http_request *requ
     //
     TOCP_Dns(request->server, request->host, HTTP_CB_Dns, request);
 }
+
 //销毁请求
 __declspec(dllexport) struct http_request * __stdcall HTTP_Request_Delete(struct http_request *request) {
 
@@ -485,10 +545,13 @@ __declspec(dllexport) void __stdcall HTTP_UnInit() {
 int main()
 {
     HTTP_Init();
-    
-    struct http_request *request = HTTP_Request_New();
-    HTTP_Request_Open(request, "GET", "http://www.baidu.com");
-    HTTP_Request_Send(request);
+    b = GetTickCount();
+    for (size_t i = 0; i < 3000; i++)
+    {
+        struct http_request *request = HTTP_Request_New();
+        HTTP_Request_Open(request, "GET", "http://www.baidu.com");
+        HTTP_Request_Send(request);
+    }
 
     scanf("%s");
     return 0;
