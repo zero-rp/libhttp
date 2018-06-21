@@ -18,6 +18,7 @@
 static LPFN_CONNECTEX lpfnConnectEx = NULL;
 static LPFN_ACCEPTEX  lpfnAcceptEx = NULL;
 static struct socket_server *default_server = NULL;
+static http_parser_settings parser_settings;
 
 typedef void(__stdcall* iocp_callback_dns)(struct socket_server * ss, void *ud, int state, char *ip);
 typedef void(__stdcall* iocp_callback_connect)(struct socket_server * ss, void *ud, int state, int fd);
@@ -27,6 +28,7 @@ typedef void(__stdcall* iocp_callback_free)(struct socket_server * ss, void *ud)
 struct socket_server {
     //完成端口数据
     HANDLE CompletionPort;
+    //socket池
 
 };
 //HTTP协议头定义
@@ -49,6 +51,8 @@ struct http_request {
     struct http_header *header;     //请求头
     void *data;                     //提交数据
     uint32_t *dlen;                 //数据长度
+
+    http_parser parser;             //http解析器
 
     struct socket_server *server;   //执行请求的服务
 };
@@ -101,34 +105,6 @@ typedef struct
     } u;
 }*LIO_DATA, IO_DATA;
 
-//异步DNS回调
-VOID WINAPI QueryCompleteCallback(DWORD Error, DWORD Bytes, IO_DATA *Overlapped) {
-    int ok = 0;
-    PADDRINFOEX QueryResults = Overlapped->u.dns.QueryResults;
-    while (QueryResults)
-    {
-        DWORD AddressStringLength = 64;
-        CHAR AddrString[64];
-        WSAAddressToStringA(QueryResults->ai_addr, (DWORD)QueryResults->ai_addrlen, NULL, AddrString, &AddressStringLength);
-        if (AddressStringLength > 0) {
-            if (Overlapped->u.dns.cb)
-                Overlapped->u.dns.cb(Overlapped->u.dns.ss, Overlapped->u.dns.ud, 0, AddrString);
-            ok = 1;
-            break;
-        }
-        QueryResults = QueryResults->ai_next;
-    }
-    if (ok != 1) {
-        if (Overlapped->u.dns.cb)
-            Overlapped->u.dns.cb(Overlapped->u.dns.ss, Overlapped->u.dns.ud, -1, NULL);
-    }
-    if (Overlapped->u.dns.QueryResults)
-    {
-        FreeAddrInfoExW(Overlapped->u.dns.QueryResults);
-    }
-    //回收完成结构
-    free(Overlapped);
-}
 //IOCP线程
 static int __stdcall IOCP_Thread(struct socket_server * ss) {
     for (; ;)
@@ -206,6 +182,8 @@ static int __stdcall IOCP_Thread(struct socket_server * ss) {
             msg->u.recv.fd = pOverlapped->u.recv.fd;
             msg->u.recv.buf.len = 8192;
             msg->u.recv.buf.buf = malloc(8192);
+            msg->u.recv.cb = pOverlapped->u.recv.cb;
+            msg->u.recv.ud = pOverlapped->u.recv.ud;
 
             //投递一个接收请求
             DWORD dwBufferCount = 1, dwRecvBytes = 0, Flags = 0;
@@ -248,6 +226,34 @@ static int __stdcall IOCP_Thread(struct socket_server * ss) {
         //释放完成数据
         free(pOverlapped);
     }
+}
+//异步DNS回调
+static VOID WINAPI QueryCompleteCallback(DWORD Error, DWORD Bytes, IO_DATA *Overlapped) {
+    int ok = 0;
+    PADDRINFOEX QueryResults = Overlapped->u.dns.QueryResults;
+    while (QueryResults)
+    {
+        DWORD AddressStringLength = 64;
+        CHAR AddrString[64];
+        WSAAddressToStringA(QueryResults->ai_addr, (DWORD)QueryResults->ai_addrlen, NULL, AddrString, &AddressStringLength);
+        if (AddressStringLength > 0) {
+            if (Overlapped->u.dns.cb)
+                Overlapped->u.dns.cb(Overlapped->u.dns.ss, Overlapped->u.dns.ud, 0, AddrString);
+            ok = 1;
+            break;
+        }
+        QueryResults = QueryResults->ai_next;
+    }
+    if (ok != 1) {
+        if (Overlapped->u.dns.cb)
+            Overlapped->u.dns.cb(Overlapped->u.dns.ss, Overlapped->u.dns.ud, -1, NULL);
+    }
+    if (Overlapped->u.dns.QueryResults)
+    {
+        FreeAddrInfoExW(Overlapped->u.dns.QueryResults);
+    }
+    //回收完成结构
+    free(Overlapped);
 }
 //创建服务
 __declspec(dllexport) struct socket_server * __stdcall IOCP_New() {
@@ -400,14 +406,9 @@ __declspec(dllexport) void __stdcall IOCP_UnInit() {
 static void __stdcall HTTP_CB_Free(struct socket_server * ss, sds s) {
     sdsfree(s);
 }
-int a = 0;
-int b = 0;
+//接收
 static void __stdcall HTTP_CB_Data(struct socket_server * ss, struct http_request *request, int state, char *data, uint32_t len) {
-    //printf("%d\r\n", a);
-    a++;
-    if (a == 2000) {
-        printf("%d\r\n", GetTickCount() - b);
-    }
+    uint32_t parsed = http_parser_execute(&request->parser, &parser_settings, data, len);
 }
 //连接
 static void __stdcall HTTP_CB_Connect(struct socket_server * ss, struct http_request *request, int state, int fd) {
@@ -446,7 +447,40 @@ static void __stdcall HTTP_CB_Dns(struct socket_server * ss, struct http_request
     //连接服务器
     TOCP_Connect(ss, ip, request->port, HTTP_CB_Connect, request);
 }
+//HTTP解析回调
+//消息完毕
+static int on_message_complete(http_parser *p) {
 
+    return 0;
+}
+//解析到消息体
+static int on_body(http_parser *p, const char *buf, size_t len) {
+    (void)p;
+    (void)buf;
+    (void)len;
+
+    return 0;
+}
+//解析到头V
+static int on_header_value(http_parser *p, const char *buf, size_t len) {
+
+    return 0;
+}
+//解析到头K
+static int on_header_field(http_parser *p, const char *buf, size_t len) {
+
+    return 0;
+}
+//解析到url
+static int on_url(http_parser *p, const char *buf, size_t len) {
+
+    return 0;
+}
+//解析开始
+static int on_message_begin(http_parser *p) {
+
+    return 0;
+}
 
 //HTTP初始化
 __declspec(dllexport) int __stdcall HTTP_Init() {
@@ -457,9 +491,20 @@ __declspec(dllexport) int __stdcall HTTP_Init() {
     IOCP_Init();
     default_server = IOCP_New();
 
+    //初始化http解析器
+    memset(&parser_settings, 0, sizeof(parser_settings));
+
+    parser_settings.on_message_complete = on_message_complete;
+    parser_settings.on_body = on_body;
+    parser_settings.on_header_value = on_header_value;
+    parser_settings.on_header_field = on_header_field;
+    parser_settings.on_url = on_url;
+    parser_settings.on_message_begin = on_message_begin;
+
     is_init = 1;
     return 1;
 }
+
 //创建HTTP请求
 __declspec(dllexport) struct http_request * __stdcall HTTP_Request_New() {
     struct http_request *request = (struct http_request *)malloc(sizeof(struct http_request));
@@ -524,11 +569,11 @@ __declspec(dllexport) void __stdcall HTTP_Request_Open(struct http_request *requ
 __declspec(dllexport) void __stdcall HTTP_Request_Send(struct http_request *request) {
     if (!request)
         return;
-
+    //准备解析器
+    http_parser_init(&request->parser, HTTP_RESPONSE);
     //
     TOCP_Dns(request->server, request->host, HTTP_CB_Dns, request);
 }
-
 //销毁请求
 __declspec(dllexport) struct http_request * __stdcall HTTP_Request_Delete(struct http_request *request) {
 
@@ -536,6 +581,7 @@ __declspec(dllexport) struct http_request * __stdcall HTTP_Request_Delete(struct
         free(request->host);
     free(request);
 }
+
 //HTTP反初始化
 __declspec(dllexport) void __stdcall HTTP_UnInit() {
 
@@ -545,8 +591,7 @@ __declspec(dllexport) void __stdcall HTTP_UnInit() {
 int main()
 {
     HTTP_Init();
-    b = GetTickCount();
-    for (size_t i = 0; i < 3000; i++)
+    for (size_t i = 0; i < 1; i++)
     {
         struct http_request *request = HTTP_Request_New();
         HTTP_Request_Open(request, "GET", "http://www.baidu.com");
