@@ -21,9 +21,21 @@
     <ClCompile Include="http_parser.c">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="url.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="sds.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="http_parser.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="url.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="sds.h">
       <Filter>源文件</Filter>
     </ClInclude>
   </ItemGroup>
