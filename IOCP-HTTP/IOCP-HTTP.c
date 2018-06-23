@@ -19,18 +19,24 @@ static LPFN_CONNECTEX lpfnConnectEx = NULL;
 static LPFN_ACCEPTEX  lpfnAcceptEx = NULL;
 static struct socket_server *default_server = NULL;
 static http_parser_settings parser_settings;
-
+//IOCP回调
 typedef void(__stdcall* iocp_callback_dns)(struct socket_server * ss, void *ud, int state, char *ip);
 typedef void(__stdcall* iocp_callback_connect)(struct socket_server * ss, void *ud, int state, int fd);
 typedef void(__stdcall* iocp_callback_data)(struct socket_server * ss, void *ud, int state, char *data, uint32_t len);
 typedef void(__stdcall* iocp_callback_free)(struct socket_server * ss, void *ud);
+//HTTP回调
+typedef void(__stdcall* http_callback_end)(struct http_request *request, void *ud);
+typedef void(__stdcall* http_callback_body)(struct http_request *request, void *ud);
 //IO服务定义
 struct socket_server {
     //完成端口数据
     HANDLE CompletionPort;
     //socket池
-
+    //定时队列
+    HANDLE TimerQueue;
 };
+//DNS缓冲定义
+//长连接池定义
 //HTTP协议头定义
 struct http_header {
     char *k;
@@ -39,21 +45,30 @@ struct http_header {
 };
 //HTTP请求定义
 struct http_request {
+    //请求数据
     char *host;
-    uint32_t ip;
     uint16_t port;
 
     uint8_t http_major;             //协议版本
     uint8_t http_minor;             //协议版本
     uint8_t ssl;                    //ssl协议
+    uint8_t keep;                   //长连接
     char *method;                   //请求类型
     char *path;                     //请求路径
     struct http_header *header;     //请求头
     void *data;                     //提交数据
     uint32_t *dlen;                 //数据长度
 
-    http_parser parser;             //http解析器
+    //应答数据
+    http_parser parser;                     //http解析器
+    struct http_header *response_header;    //请求头
 
+    //内核数据
+    HANDLE event;                   //同步事件
+    uint8_t sync;                   //同步请求
+    http_callback_end cb_end;       //完成回调
+    http_callback_body cb_body;     //数据回调
+    void *ud;                       //用户数据
     struct socket_server *server;   //执行请求的服务
 };
 //连接请求
@@ -261,6 +276,8 @@ __declspec(dllexport) struct socket_server * __stdcall IOCP_New() {
     memset(server, 0, sizeof(struct socket_server));
     //创建完成端口
     server->CompletionPort = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 0);
+    //创建定时器
+    server->TimerQueue = CreateTimerQueue();
     //启动iocp线程
     CreateThread(NULL, NULL, IOCP_Thread, server, NULL, NULL);
 
@@ -409,6 +426,9 @@ static void __stdcall HTTP_CB_Free(struct socket_server * ss, sds s) {
 //接收
 static void __stdcall HTTP_CB_Data(struct socket_server * ss, struct http_request *request, int state, char *data, uint32_t len) {
     uint32_t parsed = http_parser_execute(&request->parser, &parser_settings, data, len);
+    if (parsed) {
+
+    }
 }
 //连接
 static void __stdcall HTTP_CB_Connect(struct socket_server * ss, struct http_request *request, int state, int fd) {
@@ -419,10 +439,9 @@ static void __stdcall HTTP_CB_Connect(struct socket_server * ss, struct http_req
     TOCP_Start(ss, fd, HTTP_CB_Data, request);
     //生成数据
     sds s = sdscatprintf(sdsempty(),
-        "%s /%s HTTP/%d.%d\r\n"
-        "\r\n",
+        "%s /%s HTTP/%d.%d\r\n",
         request->method, request->path ? request->path : "", request->http_major, request->http_minor);
-
+    //添加请求头
     struct http_header *header = request->header;
     while (header)
     {
@@ -431,9 +450,9 @@ static void __stdcall HTTP_CB_Connect(struct socket_server * ss, struct http_req
             header->k, header->v);
         header = header->next;
     }
-
+    //请求结束
     s = sdscatprintf(s,
-        "\r\n\r\n");
+        "\r\n");
     //发送数据
     TOCP_Send(ss, fd, s, sdslen(s), HTTP_CB_Free, s);
 }
@@ -450,35 +469,34 @@ static void __stdcall HTTP_CB_Dns(struct socket_server * ss, struct http_request
 //HTTP解析回调
 //消息完毕
 static int on_message_complete(http_parser *p) {
-
+    struct http_request *request = (struct http_request *)p->data;
+    if (request->cb_end)
+        request->cb_end(request, request->ud);
     return 0;
 }
 //解析到消息体
 static int on_body(http_parser *p, const char *buf, size_t len) {
-    (void)p;
-    (void)buf;
-    (void)len;
-
+    struct http_request *request = (struct http_request *)p->data;
     return 0;
 }
 //解析到头V
 static int on_header_value(http_parser *p, const char *buf, size_t len) {
-
+    struct http_request *request = (struct http_request *)p->data;
     return 0;
 }
 //解析到头K
 static int on_header_field(http_parser *p, const char *buf, size_t len) {
-
+    struct http_request *request = (struct http_request *)p->data;
     return 0;
 }
 //解析到url
 static int on_url(http_parser *p, const char *buf, size_t len) {
-
+    struct http_request *request = (struct http_request *)p->data;
     return 0;
 }
 //解析开始
 static int on_message_begin(http_parser *p) {
-
+    struct http_request *request = (struct http_request *)p->data;
     return 0;
 }
 
@@ -506,7 +524,7 @@ __declspec(dllexport) int __stdcall HTTP_Init() {
 }
 
 //创建HTTP请求
-__declspec(dllexport) struct http_request * __stdcall HTTP_Request_New() {
+__declspec(dllexport) struct http_request * __stdcall HTTP_Request_New(void *ud) {
     struct http_request *request = (struct http_request *)malloc(sizeof(struct http_request));
     if (!request)
         return NULL;
@@ -514,6 +532,12 @@ __declspec(dllexport) struct http_request * __stdcall HTTP_Request_New() {
     request->server = default_server;
 
     return request;
+}
+//调整选项
+__declspec(dllexport) void __stdcall HTTP_Request_Option(struct http_request *request, char *k, char *v) {
+    if (!request || !k || !v)
+        return;
+
 }
 //设置请求头
 __declspec(dllexport) void __stdcall HTTP_Request_SetHeader(struct http_request *request, char *k, char *v) {
@@ -569,14 +593,25 @@ __declspec(dllexport) void __stdcall HTTP_Request_Open(struct http_request *requ
 __declspec(dllexport) void __stdcall HTTP_Request_Send(struct http_request *request) {
     if (!request)
         return;
+    //为同步请求创建事件
+    if (request->event)
+        request->event = CreateEventA(NULL, TRUE, FALSE, NULL);
     //准备解析器
     http_parser_init(&request->parser, HTTP_RESPONSE);
+    request->parser.data = request;
     //
     TOCP_Dns(request->server, request->host, HTTP_CB_Dns, request);
+
+    //同步请求等待事件
+    if (request->event) {
+        WaitForSingleObject(request->event, INFINITE);
+    }
 }
 //销毁请求
 __declspec(dllexport) struct http_request * __stdcall HTTP_Request_Delete(struct http_request *request) {
-
+    
+    if (request->method)
+        free(request->method);
     if (request->host)
         free(request->host);
     free(request);
@@ -591,12 +626,13 @@ __declspec(dllexport) void __stdcall HTTP_UnInit() {
 int main()
 {
     HTTP_Init();
-    for (size_t i = 0; i < 1; i++)
-    {
-        struct http_request *request = HTTP_Request_New();
+    //for (size_t i = 0; i < 1; i++)
+    //{
+        struct http_request *request = HTTP_Request_New(NULL);
         HTTP_Request_Open(request, "GET", "http://www.baidu.com");
+        //HTTP_Request_SetHeader(request, "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.15 Safari/537.36");
         HTTP_Request_Send(request);
-    }
+    //}
 
     scanf("%s");
     return 0;
