@@ -15,6 +15,8 @@
 #include "url.h"
 #include "sds.h"
 
+#define TIMEOUT_KEEPLIVE	1000 * 60		//长连接超时
+
 static LPFN_CONNECTEX lpfnConnectEx = NULL;
 static LPFN_ACCEPTEX  lpfnAcceptEx = NULL;
 static struct socket_server *default_server = NULL;
@@ -419,18 +421,18 @@ __declspec(dllexport) void __stdcall IOCP_UnInit() {
 
 
 /* 异步回调处理 */
-//回收数据
+//事件_回收数据
 static void __stdcall HTTP_CB_Free(struct socket_server * ss, sds s) {
     sdsfree(s);
 }
-//接收
+//事件_接收
 static void __stdcall HTTP_CB_Data(struct socket_server * ss, struct http_request *request, int state, char *data, uint32_t len) {
     uint32_t parsed = http_parser_execute(&request->parser, &parser_settings, data, len);
     if (parsed) {
 
     }
 }
-//连接
+//事件_连接
 static void __stdcall HTTP_CB_Connect(struct socket_server * ss, struct http_request *request, int state, int fd) {
     if (state) {
         //异常
@@ -456,7 +458,7 @@ static void __stdcall HTTP_CB_Connect(struct socket_server * ss, struct http_req
     //发送数据
     TOCP_Send(ss, fd, s, sdslen(s), HTTP_CB_Free, s);
 }
-//DNS
+//事件_DNS
 static void __stdcall HTTP_CB_Dns(struct socket_server * ss, struct http_request *request, int state, char *ip) {
     //获取ip
     if (state) {
@@ -466,6 +468,7 @@ static void __stdcall HTTP_CB_Dns(struct socket_server * ss, struct http_request
     //连接服务器
     TOCP_Connect(ss, ip, request->port, HTTP_CB_Connect, request);
 }
+
 //HTTP解析回调
 //消息完毕
 static int on_message_complete(http_parser *p) {
@@ -477,6 +480,7 @@ static int on_message_complete(http_parser *p) {
 //解析到消息体
 static int on_body(http_parser *p, const char *buf, size_t len) {
     struct http_request *request = (struct http_request *)p->data;
+	printf(buf);
     return 0;
 }
 //解析到头V
@@ -599,7 +603,7 @@ __declspec(dllexport) void __stdcall HTTP_Request_Send(struct http_request *requ
     //准备解析器
     http_parser_init(&request->parser, HTTP_RESPONSE);
     request->parser.data = request;
-    //
+    //解析DNS
     TOCP_Dns(request->server, request->host, HTTP_CB_Dns, request);
 
     //同步请求等待事件
@@ -607,6 +611,7 @@ __declspec(dllexport) void __stdcall HTTP_Request_Send(struct http_request *requ
         WaitForSingleObject(request->event, INFINITE);
     }
 }
+
 //销毁请求
 __declspec(dllexport) struct http_request * __stdcall HTTP_Request_Delete(struct http_request *request) {
     
