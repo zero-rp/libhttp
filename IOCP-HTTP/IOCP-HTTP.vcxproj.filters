@@ -27,6 +27,15 @@
     <ClCompile Include="sds.c">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="dns.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="socket_win.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="http.c">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="http_parser.h">
@@ -36,6 +45,15 @@
       <Filter>源文件</Filter>
     </ClInclude>
     <ClInclude Include="sds.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="dns.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="socket.h">
+      <Filter>源文件</Filter>
+    </ClInclude>
+    <ClInclude Include="http.h">
       <Filter>源文件</Filter>
     </ClInclude>
   </ItemGroup>
