@@ -28,6 +28,9 @@ EXPORT void CALL socket_tcp_connect(struct socket_server * ss, const char *host,
 EXPORT void CALL socket_tcp_start(struct socket_server *ss, int fd, socket_callback_data cb, void *ud);
 //发送数据
 EXPORT void CALL socket_tcp_send(struct socket_server *ss, int fd, void *buffer, int sz, socket_callback_free cb, void *ud);
+//关闭连接
+EXPORT void CALL socket_tcp_close(struct socket_server *ss, int fd);
+
 
 #ifdef __cplusplus
 }

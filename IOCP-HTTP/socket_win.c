@@ -1,4 +1,4 @@
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,14 +13,27 @@
 #include <ws2tcpip.h>
 
 static LPFN_CONNECTEX lpfnConnectEx = NULL;
-static LPFN_ACCEPTEX  lpfnAcceptEx = NULL;
+static LPFN_ACCEPTEX lpfnAcceptEx = NULL;
+static LPFN_DISCONNECTEX lpfnDisconnectEx = NULL;
+static struct socket_pool *spool = NULL;
 
+//Socket节点定义
+struct socket_node {
+    SOCKET fd;
+    struct socket_node *next;
+};
+//Socket池定义
+struct socket_pool
+{
+    int lock;
+    struct socket_node *tail;
+    struct socket_node *head;
+};
 
 //IO服务定义
 struct socket_server {
     //完成端口数据
     HANDLE CompletionPort;
-    //socket池
     //定时队列
     HANDLE TimerQueue;
 };
@@ -97,7 +110,17 @@ EXPORT int CALL socket_init() {
     {
         return -1;
     }
+    dwBytes = 0;
+    GUID GuidDisconnectEx = WSAID_DISCONNECTEX;
+    if (SOCKET_ERROR == WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, &GuidDisconnectEx, sizeof(GuidDisconnectEx), &lpfnDisconnectEx, sizeof(lpfnDisconnectEx), &dwBytes, 0, 0))
+    {
+        return -1;
+    }
     closesocket(s);
+    //初始化连接池
+    spool = (struct socket_pool *)malloc(sizeof(struct socket_pool));
+    memset(spool, 0, sizeof(struct socket_pool));
+
     is_init = 1;
     return 0;
 }
@@ -210,11 +233,22 @@ static int __stdcall IOCP_Thread(struct socket_server * ss) {
                 free(pOverlapped->u.send.buf.buf);
             break;
         }
-
-
         case 'k'://关闭连接
         {
-            closesocket(pOverlapped->u.close.fd);
+            //加入连接池
+            struct socket_node * node = (struct socket_node *)malloc(sizeof(struct socket_node));
+            node->fd = pOverlapped->u.close.fd;
+            node->next = NULL;
+            for (; 0 != InterlockedExchange(&spool->lock, 1);) {}
+            struct socket_node * tail = spool->tail;
+            spool->tail = node;
+            if (spool->head == NULL) {
+                spool->head = node;
+            }
+            else {
+                tail->next = node;
+            }
+            InterlockedExchange(&spool->lock, 0);
             break;
         }
         case 'D': //DNS解析
@@ -287,12 +321,27 @@ EXPORT void CALL socket_tcp_connect(struct socket_server * ss, const char *host,
     msg->Type = 'C';
     msg->u.connect.ud = ud;
     msg->u.connect.cb = cb;
+    SOCKET fd = 0;
+    struct socket_node *node = NULL;
+    //从池内查找
+    for (; 0 != InterlockedExchange(&spool->lock, 1);) {}
+    if (spool->head) {
+        node = spool->head;
+        spool->head = node->next;
+    }
+    InterlockedExchange(&spool->lock, 0);
+    if (node != NULL) {
+        fd = node->fd;
+        free(node);
+    }
     //创建套接字
-    SOCKET fd = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, NULL, WSA_FLAG_OVERLAPPED);
-    if (!fd) {
+    if (fd == NULL) {
+        fd = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, NULL, WSA_FLAG_OVERLAPPED);
+        if (!fd) {
 
 
-        return;
+            return;
+        }
     }
     //绑定
     struct sockaddr_in local_addr;
@@ -358,6 +407,24 @@ EXPORT void CALL socket_tcp_send(struct socket_server *ss, int fd, void *buffer,
     }
     return 0;
 }
+//IOCP关闭连接
+EXPORT void CALL socket_tcp_close(struct socket_server *ss, int fd) {
+    IO_DATA *msg = malloc(sizeof(*msg));
+    memset(msg, 0, sizeof(*msg));
+    msg->Type = 'k';
+    msg->u.close.fd = fd;
+    //投递一个发送请求
+    DWORD dwSendBytes = 0, Flags = 0;
+    if (lpfnDisconnectEx(fd, msg, Flags, NULL) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err != WSA_IO_PENDING)
+        {
+            //套接字错误
+
+        }
+    }
+    return 0;
+}
 //创建服务
 EXPORT struct socket_server * CALL socket_new() {
     struct socket_server *server = (struct socket_server *)malloc(sizeof(struct socket_server));
@@ -367,10 +434,13 @@ EXPORT struct socket_server * CALL socket_new() {
     //创建定时器
     server->TimerQueue = CreateTimerQueue();
     //启动iocp线程
-    CreateThread(NULL, NULL, IOCP_Thread, server, NULL, NULL);
-
+    for (size_t i = 0; i < 1; i++)
+    {
+        CreateThread(NULL, NULL, IOCP_Thread, server, NULL, NULL);
+    }
     return server;
 }
+//释放服务
 EXPORT void CALL socket_delete(struct socket_server *server) {
     
     
@@ -378,4 +448,3 @@ EXPORT void CALL socket_delete(struct socket_server *server) {
     DeleteTimerQueue(server->TimerQueue);
     free(server);
 }
-
