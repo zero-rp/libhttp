@@ -11,12 +11,13 @@
 #include <WinSock2.h>
 #include <MSWSock.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 
 static LPFN_CONNECTEX lpfnConnectEx = NULL;
 static LPFN_ACCEPTEX lpfnAcceptEx = NULL;
 static LPFN_DISCONNECTEX lpfnDisconnectEx = NULL;
 static struct socket_pool *spool = NULL;
-
+static struct socket_server *default_server = NULL; 
 //Socket节点定义
 struct socket_node {
     SOCKET fd;
@@ -49,7 +50,8 @@ struct request_recv {
     size_t RecvBytes;   //实际接收长度
     SOCKET fd;
     void *ud;
-    socket_callback_data cb;
+    socket_callback_alloc alloc_cb;
+    socket_callback_data data_cb;
 };
 //关闭连接请求
 struct request_close {
@@ -60,7 +62,26 @@ struct request_send {
     SOCKET fd;
     WSABUF buf;
     void *ud;
-    socket_callback_free free_cb;
+    socket_callback_send cb;
+};
+//接收数据报请求
+struct request_recvfrom {
+    WSABUF buf;         //
+    int fd;
+    void *ud;
+    socket_callback_alloc alloc_cb;
+    socket_callback_data_udp data_cb;
+    size_t RecvBytes;   //实际接收长度
+    struct sockaddr_in remote_addr;
+    int remote_addr_len;      //存储数据来源IP地址长度
+};
+//发送数据报请求
+struct request_sendfrom {
+    int fd;
+    void *ud;
+    socket_callback_send cb;
+    struct sockaddr_in remote_addr;
+    WSABUF buf;
 };
 //DNS解析
 struct request_dns {
@@ -82,6 +103,8 @@ typedef struct
         struct request_recv recv;
         struct request_send send;
         struct request_close close;
+        struct request_recvfrom recvfrom;
+        struct request_sendfrom sendfrom;
         struct request_dns dns;
     } u;
 }*LIO_DATA, IO_DATA;
@@ -195,8 +218,8 @@ static int __stdcall IOCP_Thread(struct socket_server * ss) {
                 break;
             }
             else {
-                if (pOverlapped->u.recv.cb)
-                    pOverlapped->u.recv.cb(ss, pOverlapped->u.recv.ud, 0, pOverlapped->u.recv.buf.buf, dwBytesTransfered);
+                if (pOverlapped->u.recv.data_cb)
+                    pOverlapped->u.recv.data_cb(ss, pOverlapped->u.recv.ud, 0, pOverlapped->u.recv.buf.buf, dwBytesTransfered);
             }
 
 
@@ -206,8 +229,9 @@ static int __stdcall IOCP_Thread(struct socket_server * ss) {
             msg->Type = 'R';
             msg->u.recv.fd = pOverlapped->u.recv.fd;
             msg->u.recv.buf.len = 8192;
-            msg->u.recv.buf.buf = malloc(8192);
-            msg->u.recv.cb = pOverlapped->u.recv.cb;
+            msg->u.recv.buf.buf = pOverlapped->u.recv.alloc_cb(ss, 8192);
+            msg->u.recv.alloc_cb = pOverlapped->u.recv.alloc_cb;
+            msg->u.recv.data_cb = pOverlapped->u.recv.data_cb;
             msg->u.recv.ud = pOverlapped->u.recv.ud;
 
             //投递一个接收请求
@@ -225,12 +249,51 @@ static int __stdcall IOCP_Thread(struct socket_server * ss) {
             }
             break;
         }
+        case 'f'://收到UDP数据
+        {
+            if (pOverlapped->u.recvfrom.data_cb)
+                pOverlapped->u.recvfrom.data_cb(ss, pOverlapped->u.recvfrom.ud, 0, pOverlapped->u.recvfrom.buf.buf, dwBytesTransfered);
+
+            //继续投递请求
+            IO_DATA *msg = malloc(sizeof(*msg));
+            memset(msg, 0, sizeof(*msg));
+            msg->Type = 'f';
+            msg->u.recvfrom.ud = pOverlapped->u.recvfrom.ud;
+            msg->u.recvfrom.fd = pOverlapped->u.recvfrom.fd;
+            msg->u.recvfrom.alloc_cb = pOverlapped->u.recvfrom.alloc_cb;
+            msg->u.recvfrom.data_cb = pOverlapped->u.recvfrom.data_cb;
+            msg->u.recvfrom.buf.len = 8192;
+            msg->u.recvfrom.buf.buf = pOverlapped->u.recvfrom.alloc_cb(ss, 8192);
+            msg->u.recvfrom.remote_addr_len = sizeof(msg->u.recvfrom.remote_addr);
+            DWORD Flags = 0;
+            if (WSARecvFrom(pOverlapped->u.recvfrom.fd, &msg->u.recvfrom.buf, 1, &msg->u.recvfrom.RecvBytes, &Flags, (SOCKADDR*)&(msg->u.recvfrom.remote_addr), &(msg->u.recvfrom.remote_addr_len), msg, NULL) == SOCKET_ERROR) {
+                int err = WSAGetLastError();
+                if (err != WSA_IO_PENDING)
+                {
+                    //套接字错误
+                    free(msg->u.recvfrom.buf.buf);
+                    free(msg);
+                    //通知套接字错误
+
+                }
+            }
+            break;
+            break;
+        }
         case 'S'://发送数据
         {
-            if (pOverlapped->u.send.free_cb)
-                pOverlapped->u.send.free_cb(ss, pOverlapped->u.send.ud);
+            if (pOverlapped->u.send.cb)
+                pOverlapped->u.send.cb(ss, pOverlapped->u.send.ud);
             else
                 free(pOverlapped->u.send.buf.buf);
+            break;
+        }
+        case 't':
+        {
+            if (pOverlapped->u.sendfrom.cb)
+                pOverlapped->u.sendfrom.cb(ss, pOverlapped->u.sendfrom.ud);
+            else
+                free(pOverlapped->u.sendfrom.buf.buf);
             break;
         }
         case 'k'://关闭连接
@@ -362,15 +425,16 @@ EXPORT void CALL socket_tcp_connect(struct socket_server * ss, const char *host,
     return;
 }
 //IOCP开始接受数据
-EXPORT void CALL socket_tcp_start(struct socket_server *ss, int fd, socket_callback_data cb, void *ud) {
+EXPORT void CALL socket_tcp_start(struct socket_server *ss, int fd, socket_callback_alloc alloc_cb, socket_callback_data data_cb, void *ud) {
     //投递一个请求
     IO_DATA *msg = malloc(sizeof(*msg));
     memset(msg, 0, sizeof(*msg));
     msg->Type = 'R';
     msg->u.recv.fd = fd;
     msg->u.recv.buf.len = 8192;
-    msg->u.recv.buf.buf = malloc(8192);
-    msg->u.recv.cb = cb;
+    msg->u.recv.buf.buf = alloc_cb(ss, 8192);
+    msg->u.recv.alloc_cb = alloc_cb;
+    msg->u.recv.data_cb = data_cb;
     msg->u.recv.ud = ud;
 
     //投递一个接收请求
@@ -386,14 +450,14 @@ EXPORT void CALL socket_tcp_start(struct socket_server *ss, int fd, socket_callb
     }
 }
 //IOCP发送数据
-EXPORT void CALL socket_tcp_send(struct socket_server *ss, int fd, void *buffer, int sz, socket_callback_free cb, void *ud) {
+EXPORT void CALL socket_tcp_send(struct socket_server *ss, int fd, void *buffer, int sz, socket_callback_send cb, void *ud) {
     IO_DATA *msg = malloc(sizeof(*msg));
     memset(msg, 0, sizeof(*msg));
     msg->Type = 'S';
     msg->u.send.fd = fd;
     msg->u.send.buf.buf = buffer;
     msg->u.send.buf.len = sz;
-    msg->u.send.free_cb = cb;
+    msg->u.send.cb = cb;
     msg->u.send.ud = ud;
     //投递一个发送请求
     DWORD dwSendBytes = 0, Flags = 0;
@@ -425,6 +489,147 @@ EXPORT void CALL socket_tcp_close(struct socket_server *ss, int fd) {
     }
     return 0;
 }
+//IOCP绑定UDP端口
+EXPORT int CALL socket_udp_bind(struct socket_server * ss, const char *host, int port) {
+    SOCKET fd = 0;
+    struct socket_node *node = NULL;
+    //从池内查找
+    for (; 0 != InterlockedExchange(&spool->lock, 1);) {}
+    if (spool->head) {
+        node = spool->head;
+        spool->head = node->next;
+    }
+    InterlockedExchange(&spool->lock, 0);
+    if (node != NULL) {
+        fd = node->fd;
+        free(node);
+    }
+    //创建套接字
+    if (fd == NULL) {
+        fd = WSASocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, WSA_FLAG_OVERLAPPED);
+        if (!fd) {
+
+
+            return 0;
+        }
+    }
+    //绑定
+    struct sockaddr_in local_addr;
+    memset(&local_addr, 0, sizeof(struct sockaddr_in));
+    local_addr.sin_family = AF_INET;
+    int irt = bind(fd, (struct sockaddr *)(&local_addr), sizeof(struct sockaddr_in));
+    //关联到完成端口
+    CreateIoCompletionPort((HANDLE)fd, ss->CompletionPort, (ULONG_PTR)fd, 0);
+
+    return fd;
+}
+//IOCP开始接收UDP数据
+EXPORT void CALL socket_udp_start(struct socket_server * ss, int fd, socket_callback_alloc alloc_cb, socket_callback_data_udp data_cb, void *ud) {
+    //投递一个接收请求
+    IO_DATA *msg = malloc(sizeof(*msg));
+    memset(msg, 0, sizeof(*msg));
+    msg->Type = 'f';
+    msg->u.recvfrom.ud = ud;
+    msg->u.recvfrom.fd = fd;
+    msg->u.recvfrom.alloc_cb = alloc_cb;
+    msg->u.recvfrom.data_cb = data_cb;
+    msg->u.recvfrom.buf.len = 8192;
+    msg->u.recvfrom.buf.buf = alloc_cb(ss, 8192);
+    msg->u.recvfrom.remote_addr_len = sizeof(msg->u.recvfrom.remote_addr);
+    DWORD Flags = 0;
+    if (WSARecvFrom(fd, &msg->u.recvfrom.buf, 1, &msg->u.recvfrom.RecvBytes, &Flags, (SOCKADDR*)&(msg->u.recvfrom.remote_addr), &(msg->u.recvfrom.remote_addr_len), msg, NULL) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err != WSA_IO_PENDING)
+        {
+            //套接字错误
+
+        }
+    }
+}
+//IOCP发送UDP数据包
+EXPORT void CALL socket_udp_sendto(struct socket_server * ss,int fd, const char *host, int port, void *buffer, size_t len, socket_callback_send cb, void *ud) {
+    IO_DATA *msg = malloc(sizeof(*msg));
+    memset(msg, 0, sizeof(*msg));
+    msg->Type = 't';
+    msg->u.sendfrom.ud = ud;
+    msg->u.sendfrom.fd = fd;
+    msg->u.sendfrom.cb = cb;
+    msg->u.sendfrom.buf.buf = buffer;
+    msg->u.sendfrom.buf.len = len;
+    //投递一个发送请求
+    DWORD dwSendBytes = 0, Flags = 0;
+    msg->u.sendfrom.remote_addr.sin_family = AF_INET;
+    msg->u.sendfrom.remote_addr.sin_addr.S_un.S_addr = inet_addr(host);
+    msg->u.sendfrom.remote_addr.sin_port = (uint16_t)((((uint16_t)(port) & 0xff00) >> 8) | (((uint16_t)(port) & 0x00ff) << 8));
+    if (WSASendTo(fd, &msg->u.sendfrom.buf, 1, &dwSendBytes, Flags, &msg->u.sendfrom.remote_addr, sizeof(msg->u.sendfrom.remote_addr), msg, NULL) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err != WSA_IO_PENDING)
+        {
+            //套接字错误
+
+        }
+    }
+}
+//获取dns列表
+EXPORT int CALL socket_getdnsip(uint32_t *list, int size)
+{
+    DWORD dwRetVal = 0;
+    PIP_ADAPTER_ADDRESSES pAddresses = NULL;
+    ULONG outBufLen = 15000;
+
+    PIP_ADAPTER_ADDRESSES pCurrAddresses = NULL;
+    IP_ADAPTER_DNS_SERVER_ADDRESS *pDnServer = NULL;
+
+    int pos = 0;
+    if (list == NULL)
+        return 0;
+
+    do {
+        pAddresses = (IP_ADAPTER_ADDRESSES *)malloc(outBufLen);
+        if (pAddresses == NULL) {
+            return 0;
+        }
+        dwRetVal =GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, NULL, pAddresses, &outBufLen);
+        if (dwRetVal == ERROR_BUFFER_OVERFLOW) {
+            free(pAddresses);
+            pAddresses = NULL;
+        }
+        else {
+            break;
+        }
+    } while ((dwRetVal == ERROR_BUFFER_OVERFLOW));
+
+    if (dwRetVal == NO_ERROR) {
+        pCurrAddresses = pAddresses;
+        while (pCurrAddresses) {
+            //只处理正常接口
+            if (pCurrAddresses->OperStatus != IfOperStatusUp) {
+                pCurrAddresses = pCurrAddresses->Next;
+                continue;
+            }
+            pDnServer = pCurrAddresses->FirstDnsServerAddress;
+            while (pDnServer)
+            {
+                //只处理IPV4
+                if (pDnServer->Address.lpSockaddr->sa_family == AF_INET)
+                    list[pos] = (uint32_t)(((struct sockaddr_in *)pDnServer->Address.lpSockaddr)->sin_addr.S_un.S_addr);
+                pos++;
+                pDnServer = pDnServer->Next;
+            }
+            pCurrAddresses = pCurrAddresses->Next;
+        }
+    }
+    else {
+        //没有获取到网卡
+    }
+
+    if (pAddresses) {
+        free(pAddresses);
+    }
+    return pos;
+}
+
+
 //创建服务
 EXPORT struct socket_server * CALL socket_new() {
     struct socket_server *server = (struct socket_server *)malloc(sizeof(struct socket_server));
@@ -434,11 +639,17 @@ EXPORT struct socket_server * CALL socket_new() {
     //创建定时器
     server->TimerQueue = CreateTimerQueue();
     //启动iocp线程
-    for (size_t i = 0; i < 1; i++)
+    for (size_t i = 0; i < 10; i++)
     {
         CreateThread(NULL, NULL, IOCP_Thread, server, NULL, NULL);
     }
     return server;
+}
+//获取默认服务
+EXPORT struct socket_server * CALL socket_default() {
+    if (default_server == NULL)
+        default_server = socket_new();
+    return default_server;
 }
 //释放服务
 EXPORT void CALL socket_delete(struct socket_server *server) {
