@@ -18,18 +18,38 @@
       <Platform>x64</Platform>
     </ProjectConfiguration>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\src\config.h" />
+    <ClInclude Include="..\..\src\dns.h" />
+    <ClInclude Include="..\..\src\http.h" />
+    <ClInclude Include="..\..\src\http_parser.h" />
+    <ClInclude Include="..\..\src\sds.h" />
+    <ClInclude Include="..\..\src\socket.h" />
+    <ClInclude Include="..\..\src\tls.h" />
+    <ClInclude Include="..\..\src\url_parser.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\src\dns.c" />
+    <ClCompile Include="..\..\src\http.c" />
+    <ClCompile Include="..\..\src\http_parser.c" />
+    <ClCompile Include="..\..\src\IOCP-HTTP.c" />
+    <ClCompile Include="..\..\src\sds.c" />
+    <ClCompile Include="..\..\src\socket_win.c" />
+    <ClCompile Include="..\..\src\tls.c" />
+    <ClCompile Include="..\..\src\url_parser.c" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{AE6A7EF9-25DE-4B35-987A-1B1EAF823610}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>IOCPHTTP</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+    <RootNamespace>libhttp</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
@@ -72,6 +92,8 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
+    <OutDir>$(SolutionDir)..\bin\$(Platform)\$(Configuration)</OutDir>
+    <IntDir>$(SolutionDir)..\build\$(Platform)\$(Configuration)\$(ProjectName)</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
@@ -90,11 +112,14 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;_WINSOCK_DEPRECATED_NO_WARNINGS;PLATFORM_OS_WIN;BUILDING_SHARED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
+      <AdditionalIncludeDirectories>..\..\zlib;..\..\wolfssl</AdditionalIncludeDirectories>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;wolfssl.lib;zlib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(OutDir)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -147,23 +172,6 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup>
-    <ClCompile Include="dns.c" />
-    <ClCompile Include="http.c" />
-    <ClCompile Include="http_parser.c" />
-    <ClCompile Include="IOCP-HTTP.c" />
-    <ClCompile Include="sds.c" />
-    <ClCompile Include="socket_win.c" />
-    <ClCompile Include="url.c" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="dns.h" />
-    <ClInclude Include="http.h" />
-    <ClInclude Include="http_parser.h" />
-    <ClInclude Include="sds.h" />
-    <ClInclude Include="socket.h" />
-    <ClInclude Include="url.h" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

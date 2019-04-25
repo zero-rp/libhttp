@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="..\..\..\third_party\zlib\masmx64\inffas8664.c">
+      <Filter>masmx64</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\zlib\adler32.c" />
+    <ClCompile Include="..\..\zlib\compress.c" />
+    <ClCompile Include="..\..\zlib\crc32.c" />
+    <ClCompile Include="..\..\zlib\deflate.c" />
+    <ClCompile Include="..\..\zlib\gzclose.c" />
+    <ClCompile Include="..\..\zlib\gzlib.c" />
+    <ClCompile Include="..\..\zlib\gzread.c" />
+    <ClCompile Include="..\..\zlib\gzwrite.c" />
+    <ClCompile Include="..\..\zlib\infback.c" />
+    <ClCompile Include="..\..\zlib\inffast.c" />
+    <ClCompile Include="..\..\zlib\inflate.c" />
+    <ClCompile Include="..\..\zlib\inftrees.c" />
+    <ClCompile Include="..\..\zlib\trees.c" />
+    <ClCompile Include="..\..\zlib\uncompr.c" />
+    <ClCompile Include="..\..\zlib\unzip.c" />
+    <ClCompile Include="..\..\zlib\zip.c" />
+    <ClCompile Include="..\..\zlib\zutil.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="masmx64">
+      <UniqueIdentifier>{4fb433ce-8bc8-461f-823f-34aeee7c32c5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="masmx86">
+      <UniqueIdentifier>{15bb5bca-241c-4f88-a18f-8ed4765d381c}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="..\..\..\third_party\zlib\masmx64\gvmat64.asm">
+      <Filter>masmx64</Filter>
+    </CustomBuild>
+    <CustomBuild Include="..\..\..\third_party\zlib\masmx64\inffasx64.asm">
+      <Filter>masmx64</Filter>
+    </CustomBuild>
+    <CustomBuild Include="..\..\..\third_party\zlib\masmx86\match686.asm">
+      <Filter>masmx86</Filter>
+    </CustomBuild>
+  </ItemGroup>
+</Project>
