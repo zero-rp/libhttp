@@ -1,6 +1,6 @@
 /* error.c
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -281,6 +281,9 @@ const char* wc_GetErrorString(int error)
     case PKCS7_RECIP_E:
         return "PKCS#7 error: no matching recipient found";
 
+    case WC_PKCS7_WANT_READ_E:
+        return "PKCS#7 operations wants more input, call again";
+
     case FIPS_NOT_ALLOWED_E:
         return "FIPS mode not allowed error";
 
@@ -483,7 +486,37 @@ const char* wc_GetErrorString(int error)
         return "DH Check Private Key failure";
 
     case WC_AFALG_SOCK_E:
-  	return "AF_ALG socket error";
+        return "AF_ALG socket error";
+
+    case WC_DEVCRYPTO_E:
+        return "Error with /dev/crypto";
+
+    case ZLIB_INIT_ERROR:
+        return "zlib init error";
+
+    case ZLIB_COMPRESS_ERROR:
+        return "zlib compress error";
+
+    case ZLIB_DECOMPRESS_ERROR:
+        return "zlib decompress error";
+
+    case PKCS7_NO_SIGNER_E:
+        return "No signer in PKCS#7 signed data";
+
+    case CRYPTOCB_UNAVAILABLE:
+        return "Crypto callback unavailable";
+
+    case PKCS7_SIGNEEDS_CHECK:
+        return "Signature found but no certificate to verify";
+
+    case PSS_SALTLEN_RECOVER_E:
+        return "PSS - Salt length unable to be recovered";
+
+    case CHACHA_POLY_OVERFLOW:
+        return "wolfcrypt - ChaCha20_Poly1305 limit overflow 4GB";
+
+    case ASN_SELF_SIGNED_E:
+        return "ASN self-signed certificate error";
 
     default:
         return "unknown error number";
@@ -494,6 +527,7 @@ const char* wc_GetErrorString(int error)
 void wc_ErrorString(int error, char* buffer)
 {
     XSTRNCPY(buffer, wc_GetErrorString(error), WOLFSSL_MAX_ERROR_SZ);
+    buffer[WOLFSSL_MAX_ERROR_SZ-1] = 0;
 }
 #endif /* !NO_ERROR_STRINGS */
 

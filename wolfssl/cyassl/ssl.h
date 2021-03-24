@@ -1,6 +1,6 @@
 /* ssl.h
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -21,7 +21,7 @@
 
 
 /*
- * ssl.h makes wolfssl backwards compatibile with cyassl
+ * ssl.h makes wolfssl backwards compatible with cyassl
  */
 
 #ifndef WOLFSSL_CYASSL_H_
@@ -166,6 +166,8 @@
 #define CyaSSL_X509_get_der       wolfSSL_X509_get_der
 #define CyaSSL_X509_notBefore     wolfSSL_X509_notBefore
 #define CyaSSL_X509_notAfter      wolfSSL_X509_notAfter
+#define CyaSSL_X509_get_notBefore wolfSSL_X509_get_notBefore
+#define CyaSSL_X509_get_notAfter  wolfSSL_X509_get_notAfter
 #define CyaSSL_X509_version       wolfSSL_X509_version
 
 #define CyaSSL_cmp_peer_cert_to_file wolfSSL_cmp_peer_cert_to_file
@@ -492,7 +494,7 @@
 /* Callbacks */
 
 /*
- * Empty commment denotes not listed in CyaSSL Manual
+ * Empty comment denotes not listed in CyaSSL Manual
  * (soon to be wolfSSL Manual)
  */
 
@@ -566,7 +568,7 @@
 /* OCSP and CRL */
 
 /*
- * Empty commment denotes not listed in CyaSSL Manual
+ * Empty comment denotes not listed in CyaSSL Manual
  * (soon to be wolfSSL Manual)
  */
 

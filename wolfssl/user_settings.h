@@ -1,46 +1,110 @@
 #ifndef _WIN_USER_SETTINGS_H_
 #define _WIN_USER_SETTINGS_H_
 
-/* Verify this is Windows */
-#ifndef _WIN32
-#error This user_settings.h header is only designed for Windows
+
+#define WC_RSA_BLINDING
+
+#define OPENSSL_ALL
+#define OPENSSL_EXTRA
+
+
+#define WOLFSSL_MULTICAST
+#define HAVE_CURVE448
+#define HAVE_IDEA
+//#define HAVE_NTRU
+#define HAVE_ANON
+#define WOLFSSL_POST_HANDSHAKE_AUTH
+#define WOLFSSL_SHAKE256
+#define WOLFSSL_SHA3
+#define WOLFSSL_SHA224
+#define HAVE_ED448
+#define WOLFSSL_QL
+#define WOLFSSL_SCTP
+#define WOLFSSL_TLS13_MIDDLEBOX_COMPAT
+#define HAVE_SECRET_CALLBACK
+#define HAVE_WOLF_BIGINT
+#define WOLFSSL_EXTRA_ALERTS
+#define HAVE_ENCRYPT_THEN_MAC
+#define HAVE_ED25519
+#define HAVE_EX_DATA
+#define HAVE_EXT_CACHE
+#define WOLFSSL_EARLY_DATA
+#define WOLFSSL_RIPEMD
+#define NO_PSK
+#define HAVE_EXTENDED_MASTER
+#define HAVE_TLS_EXTENSIONS
+#define HAVE_ALPN
+#define WOLFSSL_ALWAYS_KEEP_SNI
+#define WOLFSSL_ALLOW_TLSV10
+#define WOLFSSL_ALLOW_SSLV3
+#define WOLFSSL_TLS13
+#define HAVE_AES_ECB
+#define HAVE_AES_KEYWRAP
+#define HAVE_AESGCM
+#define HAVE_AESCCM
+#define WOLFSSL_AES_CFB
+#define WOLFSSL_AES_DIRECT
+#define WOLFSSL_AES_XTS
+#define WOLFSSL_SHA384
+#define WOLFSSL_SHA512
+#define HAVE_ECC
+#define HAVE_ECC_ENCRYPT
+#define HAVE_ECC_KOBLITZ
+#define HAVE_ECC_SECPR2
+#define HAVE_ECC_BRAINPOOL
+#define HAVE_ECC_SECPR3
+#define ECC_SHAMIR
+#define ECC_TIMING_RESISTANT
+#define WOLFSSL_CUSTOM_CURVES
+#define HAVE_SUPPORTED_CURVES
+#define HAVE_SECURE_RENEGOTIATION
+#define WC_NO_HARDEN
+#define WOLFSSL_KEY_GEN
+#define HAVE_COMP_KEY
+#define WOLFSSL_DES_ECB
+#define HAVE_FFDHE_2048
+#define WC_RSA_PSS
+#define HAVE_LIBZ
+#define HAVE_PKCS7
+#define HAVE_HKDF
+#define HAVE_X963_KDF
+#define WOLFSSL_CERT_EXT
+#define WOLFSSL_CERT_GEN
+#define WOLFSSL_CERT_REQ
+#define WOLFSSL_DER_LOAD
+#define WOLFSSL_DTLS
+#define HAVE_CAMELLIA
+#define HAVE_CHACHA
+#define HAVE_POLY1305
+#define HAVE_ONE_TIME_AUTH
+#define HAVE_CRL
+#define HAVE_CRL_IO
+#define HAVE_OCSP
+#define WOLFSSL_SNIFFER
+#define WOLFSSL_SNIFFER_WATCH
+#define WOLFSSL_SNIFFER_STATS
+#define HAVE_CURVE25519
+
+/* Optional Performance Speedups */
+#if 1
+    /* AESNI on x64 */
+#if(defined(_WIN64) || defined(USE_ARCH_X86_64) || defined(USE_ARCH_AMD64))
+#define HAVE_INTEL_RDSEED
+#define WOLFSSL_AESNI
 #endif
 
-/* Configurations */
-#if defined(HAVE_FIPS)
-    /* FIPS */
-    #define OPENSSL_EXTRA
-    #define HAVE_THREAD_LS
-    #define WOLFSSL_KEY_GEN
-    #define HAVE_AESGCM
-    #define HAVE_HASHDRBG
-    #define WOLFSSL_SHA384
-    #define WOLFSSL_SHA512
-    #define NO_PSK
-    #define NO_HC128
-    #define NO_RC4
-    #define NO_RABBIT
-    #define NO_DSA
-    #define NO_MD4
-#else
-    /* Enables blinding mode, to prevent timing attacks */
-    #define WC_RSA_BLINDING
+/* Single Precision Support for RSA/DH 1024/2048/3072 and ECC P-256 */
+#define WOLFSSL_SP
+#define WOLFSSL_HAVE_SP_ECC
+#define WOLFSSL_HAVE_SP_DH
+#define WOLFSSL_HAVE_SP_RSA
+#endif
 
-    #if defined(WOLFSSL_LIB)
-        /* The lib */
-        #define OPENSSL_EXTRA
-        #define WOLFSSL_RIPEMD
-        #define WOLFSSL_SHA512
-        #define NO_PSK
-        #define HAVE_EXTENDED_MASTER
-        #define WOLFSSL_SNIFFER
-        #define HAVE_TLS_EXTENSIONS
-        #define HAVE_SECURE_RENEGOTIATION
-    #else
-        /* The servers and clients */
-        #define OPENSSL_EXTRA
-        #define NO_PSK
-    #endif
-#endif /* HAVE_FIPS */
+#if _DEBUG
+#define DEBUG_WOLFSSL
+//#define WOLFSSL_DEBUG_TLS
+//#define SHOW_SECRETS
+//#define WOLFSSL_SSLKEYLOGFILE
+#endif
 
 #endif /* _WIN_USER_SETTINGS_H_ */

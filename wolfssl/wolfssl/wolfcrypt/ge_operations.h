@@ -1,6 +1,6 @@
 /* ge_operations.h
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -47,12 +47,14 @@ Representations:
 
 #ifdef ED25519_SMALL
   typedef byte     ge[F25519_SIZE];
-#elif defined(CURVED25519_X64)
-  typedef int64_t  ge[4];
+#elif defined(CURVED25519_ASM_64BIT)
+  typedef sword64  ge[4];
+#elif defined(CURVED25519_ASM_32BIT)
+  typedef sword32  ge[8];
 #elif defined(CURVED25519_128BIT)
-  typedef int64_t  ge[5];
+  typedef sword64  ge[5];
 #else
-  typedef int32_t  ge[10];
+  typedef sword32  ge[10];
 #endif
 
 typedef struct {

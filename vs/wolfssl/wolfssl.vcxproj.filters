@@ -37,9 +37,6 @@
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\cpuid.c">
       <Filter>wolfcrypt\src</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\wolfssl\wolfcrypt\src\cryptodev.c">
-      <Filter>wolfcrypt\src</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\curve25519.c">
       <Filter>wolfcrypt\src</Filter>
     </ClCompile>
@@ -143,9 +140,6 @@
       <Filter>wolfcrypt\src</Filter>
     </ClCompile>
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\signature.c">
-      <Filter>wolfcrypt\src</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sp.c">
       <Filter>wolfcrypt\src</Filter>
     </ClCompile>
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sp_arm32.c">

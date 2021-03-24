@@ -125,7 +125,7 @@
       <PreprocessorDefinitions>_DEBUG;_LIB;_CRT_SECURE_NO_WARNINGS;BUILDING_WOLFSSL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>..\..\..\third_party\wolfssl\;..\..\..\third_party\zlib</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\..\wolfssl\;..\..\zlib</AdditionalIncludeDirectories>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
     <Link>
@@ -207,7 +207,6 @@
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\coding.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\compress.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\cpuid.c" />
-    <ClCompile Include="..\..\wolfssl\wolfcrypt\src\cryptodev.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\curve25519.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\des3.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\dh.c" />
@@ -243,7 +242,6 @@
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sha3.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sha512.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\signature.c" />
-    <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sp.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sp_arm32.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sp_arm64.c" />
     <ClCompile Include="..\..\wolfssl\wolfcrypt\src\sp_c32.c" />

@@ -1,6 +1,6 @@
 /* wolfio.c
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -39,7 +39,7 @@
 #include <wolfssl/wolfio.h>
 
 #if defined(HAVE_HTTP_CLIENT)
-    #include <stdlib.h>   /* atoi(), strtol() */
+    #include <stdlib.h>   /* strtol() */
 #endif
 
 /*
@@ -88,12 +88,19 @@ static WC_INLINE int TranslateReturnCode(int old, int sd)
     return old;
 }
 
-static WC_INLINE int wolfSSL_LastError(void)
+static WC_INLINE int wolfSSL_LastError(int err)
 {
+    (void)err; /* Suppress unused arg */
+
 #ifdef USE_WINDOWS_API
     return WSAGetLastError();
 #elif defined(EBSNET)
     return xn_getlasterror();
+#elif defined(WOLFSSL_LINUXKM)
+    return err; /* Return provided error value */
+#elif defined(FUSION_RTOS)
+    #include <fclerrno.h>
+    return FCL_GET_ERRNO;
 #else
     return errno;
 #endif
@@ -103,6 +110,7 @@ static WC_INLINE int wolfSSL_LastError(void)
 
 
 #ifdef OPENSSL_EXTRA
+#ifndef NO_BIO
 /* Use the WOLFSSL read BIO for receiving data. This is set by the function
  * wolfSSL_set_bio and can also be set by wolfSSL_CTX_SetIORecv.
  *
@@ -125,14 +133,24 @@ int BioReceive(WOLFSSL* ssl, char* buf, int sz, void* ctx)
         return WOLFSSL_CBIO_ERR_GENERAL;
     }
 
+    if (ssl->biord->method && ssl->biord->method->readCb) {
+        WOLFSSL_MSG("Calling custom biord");
+        recvd = ssl->biord->method->readCb(ssl->biord, buf, sz);
+        if (recvd < 0 && recvd != WOLFSSL_CBIO_ERR_WANT_READ)
+            return WOLFSSL_CBIO_ERR_GENERAL;
+        return recvd;
+    }
+
     switch (ssl->biord->type) {
         case WOLFSSL_BIO_MEMORY:
         case WOLFSSL_BIO_BIO:
             if (wolfSSL_BIO_ctrl_pending(ssl->biord) == 0) {
+                WOLFSSL_MSG("BIO want read");
                return WOLFSSL_CBIO_ERR_WANT_READ;
             }
             recvd = wolfSSL_BIO_read(ssl->biord, buf, sz);
             if (recvd <= 0) {
+                WOLFSSL_MSG("BIO general error");
                 return WOLFSSL_CBIO_ERR_GENERAL;
             }
             break;
@@ -161,9 +179,20 @@ int BioSend(WOLFSSL* ssl, char *buf, int sz, void *ctx)
 {
     int sent = WOLFSSL_CBIO_ERR_GENERAL;
 
+    WOLFSSL_ENTER("BioSend");
+
     if (ssl->biowr == NULL) {
-        WOLFSSL_MSG("WOLFSSL biowr not set\n");
+        WOLFSSL_MSG("WOLFSSL biowr not set");
         return WOLFSSL_CBIO_ERR_GENERAL;
+    }
+
+    if (ssl->biowr->method && ssl->biowr->method->writeCb) {
+        WOLFSSL_MSG("Calling custom biowr");
+        sent = ssl->biowr->method->writeCb(ssl->biowr, buf, sz);
+        if ((sent < 0) && (sent != WOLFSSL_CBIO_ERR_WANT_WRITE)) {
+            return WOLFSSL_CBIO_ERR_GENERAL;
+        }
+        return sent;
     }
 
     switch (ssl->biowr->type) {
@@ -183,7 +212,8 @@ int BioSend(WOLFSSL* ssl, char *buf, int sz, void *ctx)
 
     return sent;
 }
-#endif
+#endif /* !NO_BIO */
+#endif /* OPENSSL_EXTRA */
 
 
 #ifdef USE_WOLFSSL_IO
@@ -193,12 +223,16 @@ int BioSend(WOLFSSL* ssl, char *buf, int sz, void *ctx)
  */
 int EmbedReceive(WOLFSSL *ssl, char *buf, int sz, void *ctx)
 {
-    int sd = *(int*)ctx;
     int recvd;
+#ifndef WOLFSSL_LINUXKM
+    int sd = *(int*)ctx;
+#else
+    struct socket *sd = (struct socket*)ctx;
+#endif
 
     recvd = wolfIO_Recv(sd, buf, sz, ssl->rflags);
     if (recvd < 0) {
-        int err = wolfSSL_LastError();
+        int err = wolfSSL_LastError(recvd);
         WOLFSSL_MSG("Embed Receive error");
 
         if (err == SOCKET_EWOULDBLOCK || err == SOCKET_EAGAIN) {
@@ -235,12 +269,21 @@ int EmbedReceive(WOLFSSL *ssl, char *buf, int sz, void *ctx)
  */
 int EmbedSend(WOLFSSL* ssl, char *buf, int sz, void *ctx)
 {
-    int sd = *(int*)ctx;
     int sent;
+#ifndef WOLFSSL_LINUXKM
+    int sd = *(int*)ctx;
+#else
+    struct socket *sd = (struct socket*)ctx;
+#endif
+
+#ifdef WOLFSSL_MAX_SEND_SZ
+    if (sz > WOLFSSL_MAX_SEND_SZ)
+        sz = WOLFSSL_MAX_SEND_SZ;
+#endif
 
     sent = wolfIO_Send(sd, buf, sz, ssl->wflags);
     if (sent < 0) {
-        int err = wolfSSL_LastError();
+        int err = wolfSSL_LastError(sent);
         WOLFSSL_MSG("Embed Send error");
 
         if (err == SOCKET_EWOULDBLOCK || err == SOCKET_EAGAIN) {
@@ -292,7 +335,9 @@ int EmbedReceiveFrom(WOLFSSL *ssl, char *buf, int sz, void *ctx)
 
     WOLFSSL_ENTER("EmbedReceiveFrom()");
 
-    if (ssl->options.handShakeDone)
+    /* Don't use ssl->options.handShakeDone since it is true even if
+     * we are in the process of renegotiation */
+    if (ssl->options.handShakeState == HANDSHAKE_DONE)
         dtls_timeout = 0;
 
     if (!wolfSSL_get_using_nonblock(ssl)) {
@@ -308,6 +353,18 @@ int EmbedReceiveFrom(WOLFSSL *ssl, char *buf, int sz, void *ctx)
                 WOLFSSL_MSG("setsockopt rcvtimeo failed");
         }
     }
+#ifndef NO_ASN_TIME
+    else if(IsSCR(ssl)) {
+        if (ssl->dtls_start_timeout &&
+                LowResTimer() - ssl->dtls_start_timeout > (word32)dtls_timeout) {
+            ssl->dtls_start_timeout = 0;
+            return WOLFSSL_CBIO_ERR_TIMEOUT;
+        }
+        else if (!ssl->dtls_start_timeout) {
+            ssl->dtls_start_timeout = LowResTimer();
+        }
+    }
+#endif /* !NO_ASN_TIME */
 
     recvd = (int)RECVFROM_FUNCTION(sd, buf, sz, ssl->rflags,
                                   (SOCKADDR*)&peer, &peerSz);
@@ -315,7 +372,7 @@ int EmbedReceiveFrom(WOLFSSL *ssl, char *buf, int sz, void *ctx)
     recvd = TranslateReturnCode(recvd, sd);
 
     if (recvd < 0) {
-        err = wolfSSL_LastError();
+        err = wolfSSL_LastError(recvd);
         WOLFSSL_MSG("Embed Receive From error");
 
         if (err == SOCKET_EWOULDBLOCK || err == SOCKET_EAGAIN) {
@@ -353,6 +410,9 @@ int EmbedReceiveFrom(WOLFSSL *ssl, char *buf, int sz, void *ctx)
             return WOLFSSL_CBIO_ERR_WANT_READ;
         }
     }
+#ifndef NO_ASN_TIME
+    ssl->dtls_start_timeout = 0;
+#endif /* !NO_ASN_TIME */
 
     return recvd;
 }
@@ -366,19 +426,18 @@ int EmbedSendTo(WOLFSSL* ssl, char *buf, int sz, void *ctx)
     WOLFSSL_DTLS_CTX* dtlsCtx = (WOLFSSL_DTLS_CTX*)ctx;
     int sd = dtlsCtx->wfd;
     int sent;
-    int len = sz;
     int err;
 
     WOLFSSL_ENTER("EmbedSendTo()");
 
-    sent = (int)SENDTO_FUNCTION(sd, &buf[sz - len], len, ssl->wflags,
+    sent = (int)SENDTO_FUNCTION(sd, buf, sz, ssl->wflags,
                                 (const SOCKADDR*)dtlsCtx->peer.sa,
                                 dtlsCtx->peer.sz);
 
     sent = TranslateReturnCode(sent, sd);
 
     if (sent < 0) {
-        err = wolfSSL_LastError();
+        err = wolfSSL_LastError(sent);
         WOLFSSL_MSG("Embed Send To error");
 
         if (err == SOCKET_EWOULDBLOCK || err == SOCKET_EAGAIN) {
@@ -426,7 +485,7 @@ int EmbedReceiveFromMcast(WOLFSSL *ssl, char *buf, int sz, void *ctx)
     recvd = TranslateReturnCode(recvd, sd);
 
     if (recvd < 0) {
-        err = wolfSSL_LastError();
+        err = wolfSSL_LastError(recvd);
         WOLFSSL_MSG("Embed Receive From error");
 
         if (err == SOCKET_EWOULDBLOCK || err == SOCKET_EAGAIN) {
@@ -496,7 +555,7 @@ int EmbedGenerateCookie(WOLFSSL* ssl, byte *buf, int sz, void *ctx)
 
     /* get the peer information in human readable form (ip, port, family)
      * default function assumes BSD sockets
-     * can be overriden with wolfSSL_CTX_SetIOGetPeer
+     * can be overridden with wolfSSL_CTX_SetIOGetPeer
      */
     int EmbedGetPeer(WOLFSSL* ssl, char* ip, int* ipSz,
                                                  unsigned short* port, int* fam)
@@ -552,7 +611,7 @@ int EmbedGenerateCookie(WOLFSSL* ssl, byte *buf, int sz, void *ctx)
 
     /* set the peer information in human readable form (ip, port, family)
      * default function assumes BSD sockets
-     * can be overriden with wolfSSL_CTX_SetIOSetPeer
+     * can be overridden with wolfSSL_CTX_SetIOSetPeer
      */
     int EmbedSetPeer(WOLFSSL* ssl, char* ip, int ipSz,
                                                    unsigned short port, int fam)
@@ -610,6 +669,28 @@ int EmbedGenerateCookie(WOLFSSL* ssl, byte *buf, int sz, void *ctx)
     }
 #endif /* WOLFSSL_SESSION_EXPORT */
 #endif /* WOLFSSL_DTLS */
+
+#ifdef WOLFSSL_LINUXKM
+static int linuxkm_send(struct socket *socket, void *buf, int size,
+    unsigned int flags)
+{
+    int ret;
+    struct kvec vec = { .iov_base = buf, .iov_len = size };
+    struct msghdr msg = { .msg_flags = flags };
+    ret = kernel_sendmsg(socket, &msg, &vec, 1, size);
+    return ret;
+}
+
+static int linuxkm_recv(struct socket *socket, void *buf, int size,
+    unsigned int flags)
+{
+    int ret;
+    struct kvec vec = { .iov_base = buf, .iov_len = size };
+    struct msghdr msg = { .msg_flags = flags };
+    ret = kernel_recvmsg(socket, &msg, &vec, 1, size, msg.msg_flags);
+    return ret;
+}
+#endif /* WOLFSSL_LINUXKM */
 
 
 int wolfIO_Recv(SOCKET_T sd, char *buf, int sz, int rdFlags)
@@ -707,6 +788,8 @@ int wolfIO_Send(SOCKET_T sd, char *buf, int sz, int wrFlags)
                 }
             }
         }
+
+        WOLFSSL_MSG("Select error");
         return SOCKET_ERROR_E;
     }
 #endif /* HAVE_IO_TIMEOUT */
@@ -744,7 +827,8 @@ int wolfIO_TcpConnect(SOCKET_T* sockfd, const char* ip, word16 port, int to_sec)
     int ret = 0;
     SOCKADDR_S addr;
     int sockaddr_len = sizeof(SOCKADDR_IN);
-#ifdef HAVE_GETADDRINFO
+    /* use gethostbyname for c99 */
+#if defined(HAVE_GETADDRINFO) && !defined(WOLF_C99)
     ADDRINFO hints;
     ADDRINFO* answer = NULL;
     char strPort[6];
@@ -753,13 +837,18 @@ int wolfIO_TcpConnect(SOCKET_T* sockfd, const char* ip, word16 port, int to_sec)
     SOCKADDR_IN *sin;
 #endif
 
+    if (sockfd == NULL || ip == NULL) {
+        return -1;
+    }
+
     XMEMSET(&addr, 0, sizeof(addr));
 
 #ifdef WOLFIO_DEBUG
     printf("TCP Connect: %s:%d\n", ip, port);
 #endif
 
-#ifdef HAVE_GETADDRINFO
+    /* use gethostbyname for c99 */
+#if defined(HAVE_GETADDRINFO) && !defined(WOLF_C99)
     XMEMSET(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -794,18 +883,15 @@ int wolfIO_TcpConnect(SOCKET_T* sockfd, const char* ip, word16 port, int to_sec)
 #endif
 
     *sockfd = (SOCKET_T)socket(addr.ss_family, SOCK_STREAM, 0);
-
 #ifdef USE_WINDOWS_API
-    if (*sockfd == INVALID_SOCKET) {
+    if (*sockfd == SOCKET_INVALID)
+#else
+    if (*sockfd <= SOCKET_INVALID)
+#endif
+    {
         WOLFSSL_MSG("bad socket fd, out of fds?");
         return -1;
     }
-#else
-     if (*sockfd < 0) {
-         WOLFSSL_MSG("bad socket fd, out of fds?");
-         return -1;
-     }
-#endif
 
 #ifdef HAVE_IO_TIMEOUT
     /* if timeout value provided then set socket non-blocking */
@@ -830,6 +916,8 @@ int wolfIO_TcpConnect(SOCKET_T* sockfd, const char* ip, word16 port, int to_sec)
 #endif
     if (ret != 0) {
         WOLFSSL_MSG("Responder tcp connect failed");
+        CloseSocket(*sockfd);
+        *sockfd = SOCKET_INVALID;
         return -1;
     }
     return ret;
@@ -876,7 +964,8 @@ int wolfIO_DecodeUrl(const char* url, int urlSz, char* outName, char* outPath,
         if (url[cur] == '[') {
             cur++;
             /* copy until ']' */
-            while (url[cur] != 0 && url[cur] != ']' && cur < urlSz) {
+            while (i < MAX_URL_ITEM_SIZE-1 && cur < urlSz && url[cur] != 0 &&
+                    url[cur] != ']') {
                 if (outName)
                     outName[i] = url[cur];
                 i++; cur++;
@@ -884,8 +973,8 @@ int wolfIO_DecodeUrl(const char* url, int urlSz, char* outName, char* outPath,
             cur++; /* skip ']' */
         }
         else {
-            while (url[cur] != 0 && url[cur] != ':' &&
-                                           url[cur] != '/' && cur < urlSz) {
+            while (i < MAX_URL_ITEM_SIZE-1 && cur < urlSz && url[cur] != 0 &&
+                    url[cur] != ':' && url[cur] != '/') {
                 if (outName)
                     outName[i] = url[cur];
                 i++; cur++;
@@ -901,9 +990,9 @@ int wolfIO_DecodeUrl(const char* url, int urlSz, char* outName, char* outPath,
             word32 bigPort = 0;
             i = 0;
             cur++;
-            while (cur < urlSz && url[cur] != 0 && url[cur] != '/' &&
-                    i < 6) {
-                port[i++] = url[cur++];
+            while (i < 6 && cur < urlSz && url[cur] != 0 && url[cur] != '/') {
+                port[i] = url[cur];
+                i++; cur++;
             }
 
             for (j = 0; j < i; j++) {
@@ -919,7 +1008,7 @@ int wolfIO_DecodeUrl(const char* url, int urlSz, char* outName, char* outPath,
 
         if (cur < urlSz && url[cur] == '/') {
             i = 0;
-            while (cur < urlSz && url[cur] != 0 && i < MAX_URL_ITEM_SIZE) {
+            while (i < MAX_URL_ITEM_SIZE-1 && cur < urlSz && url[cur] != 0) {
                 if (outPath)
                     outPath[i] = url[cur];
                 i++; cur++;
@@ -938,8 +1027,8 @@ int wolfIO_DecodeUrl(const char* url, int urlSz, char* outName, char* outPath,
     return result;
 }
 
-static int wolfIO_HttpProcessResponseBuf(int sfd, byte **recvBuf, int* recvBufSz,
-    int chunkSz, char* start, int len, int dynType, void* heap)
+static int wolfIO_HttpProcessResponseBuf(int sfd, byte **recvBuf,
+    int* recvBufSz, int chunkSz, char* start, int len, int dynType, void* heap)
 {
     byte* newRecvBuf = NULL;
     int newRecvSz = *recvBufSz + chunkSz;
@@ -949,6 +1038,19 @@ static int wolfIO_HttpProcessResponseBuf(int sfd, byte **recvBuf, int* recvBufSz
 #ifdef WOLFIO_DEBUG
     printf("HTTP Chunk %d->%d\n", *recvBufSz, chunkSz);
 #endif
+
+    (void)heap;
+    (void)dynType;
+
+    if (chunkSz < 0 || len < 0) {
+        WOLFSSL_MSG("wolfIO_HttpProcessResponseBuf invalid chunk or length size");
+        return MEMORY_E;
+    }
+
+    if (newRecvSz <= 0) {
+        WOLFSSL_MSG("wolfIO_HttpProcessResponseBuf new receive size overflow");
+        return MEMORY_E;
+    }
 
     newRecvBuf = (byte*)XMALLOC(newRecvSz, heap, dynType);
     if (newRecvBuf == NULL) {
@@ -966,8 +1068,15 @@ static int wolfIO_HttpProcessResponseBuf(int sfd, byte **recvBuf, int* recvBufSz
 
     /* copy the remainder of the httpBuf into the respBuf */
     if (len != 0) {
-        XMEMCPY(&newRecvBuf[pos], start, len);
-        pos += len;
+        if (pos + len <= newRecvSz) {
+            XMEMCPY(&newRecvBuf[pos], start, len);
+            pos += len;
+        }
+        else {
+            WOLFSSL_MSG("wolfIO_HttpProcessResponseBuf bad size");
+            XFREE(newRecvBuf, heap, dynType);
+            return -1;
+        }
     }
 
     /* receive the remainder of chunk */
@@ -1025,6 +1134,12 @@ int wolfIO_HttpProcessResponse(int sfd, const char** appStrList,
                 start[len] = 0;
             }
             else {
+                result = TranslateReturnCode(result, sfd);
+                result = wolfSSL_LastError(result);
+                if (result == SOCKET_EWOULDBLOCK || result == SOCKET_EAGAIN) {
+                    return OCSP_WANT_READ;
+                }
+
                 WOLFSSL_MSG("wolfIO_HttpProcessResponse recv http from peer failed");
                 return -1;
             }
@@ -1060,6 +1175,12 @@ int wolfIO_HttpProcessResponse(int sfd, const char** appStrList,
 
             switch (state) {
                 case phr_init:
+                    if (XSTRLEN(start) < 15) { /* 15 is the length of the two
+                                          constant strings we're about to
+                                          compare against. */
+                        WOLFSSL_MSG("wolfIO_HttpProcessResponse HTTP header too short.");
+                        return -1;
+                    }
                     if (XSTRNCASECMP(start, "HTTP/1", 6) == 0) {
                         start += 9;
                         if (XSTRNCASECMP(start, "200 OK", 6) != 0) {
@@ -1072,11 +1193,17 @@ int wolfIO_HttpProcessResponse(int sfd, const char** appStrList,
                 case phr_http_start:
                 case phr_have_length:
                 case phr_have_type:
+                    if (XSTRLEN(start) < 13) { /* 13 is the shortest of the following
+                                          next lines we're checking for. */
+                        WOLFSSL_MSG("wolfIO_HttpProcessResponse content type is too short.");
+                        return -1;
+                    }
+
                     if (XSTRNCASECMP(start, "Content-Type:", 13) == 0) {
                         int i;
 
                         start += 13;
-                        while (*start == ' ' && *start != '\0') start++;
+                        while (*start == ' ') start++;
 
                         /* try and match against appStrList */
                         i = 0;
@@ -1095,13 +1222,13 @@ int wolfIO_HttpProcessResponse(int sfd, const char** appStrList,
                     }
                     else if (XSTRNCASECMP(start, "Content-Length:", 15) == 0) {
                         start += 15;
-                        while (*start == ' ' && *start != '\0') start++;
-                        chunkSz = atoi(start);
+                        while (*start == ' ') start++;
+                        chunkSz = XATOI(start);
                         state = (state == phr_http_start) ? phr_have_length : phr_wait_end;
                     }
                     else if (XSTRNCASECMP(start, "Transfer-Encoding:", 18) == 0) {
                         start += 18;
-                        while (*start == ' ' && *start != '\0') start++;
+                        while (*start == ' ') start++;
                         if (XSTRNCASECMP(start, "chunked", 7) == 0) {
                             isChunked = 1;
                             state = (state == phr_http_start) ? phr_have_length : phr_wait_end;
@@ -1139,12 +1266,18 @@ int wolfIO_HttpProcessResponse(int sfd, const char** appStrList,
 
     return result;
 }
-
-int wolfIO_HttpBuildRequest(const char* reqType, const char* domainName,
-    const char* path, int pathLen, int reqSz, const char* contentType,
-    byte* buf, int bufSize)
+int wolfIO_HttpBuildRequest(const char *reqType, const char *domainName,
+                               const char *path, int pathLen, int reqSz, const char *contentType,
+                               byte *buf, int bufSize)
 {
-    word32 reqTypeLen, domainNameLen, reqSzStrLen, contentTypeLen, maxLen;
+    return wolfIO_HttpBuildRequest_ex(reqType, domainName, path, pathLen, reqSz, contentType, "", buf, bufSize);
+}
+
+    int wolfIO_HttpBuildRequest_ex(const char *reqType, const char *domainName,
+                                const char *path, int pathLen, int reqSz, const char *contentType,
+                                const char *exHdrs, byte *buf, int bufSize)
+    {
+    word32 reqTypeLen, domainNameLen, reqSzStrLen, contentTypeLen, exHdrsLen, maxLen;
     char reqSzStr[6];
     char* req = (char*)buf;
     const char* blankStr = " ";
@@ -1152,9 +1285,10 @@ int wolfIO_HttpBuildRequest(const char* reqType, const char* domainName,
     const char* hostStr = "\r\nHost: ";
     const char* contentLenStr = "\r\nContent-Length: ";
     const char* contentTypeStr = "\r\nContent-Type: ";
+    const char* singleCrLfStr = "\r\n";
     const char* doubleCrLfStr = "\r\n\r\n";
     word32 blankStrLen, http11StrLen, hostStrLen, contentLenStrLen,
-        contentTypeStrLen, doubleCrLfStrLen;
+        contentTypeStrLen, singleCrLfStrLen, doubleCrLfStrLen;
 
     reqTypeLen = (word32)XSTRLEN(reqType);
     domainNameLen = (word32)XSTRLEN(domainName);
@@ -1166,6 +1300,15 @@ int wolfIO_HttpBuildRequest(const char* reqType, const char* domainName,
     hostStrLen = (word32)XSTRLEN(hostStr);
     contentLenStrLen = (word32)XSTRLEN(contentLenStr);
     contentTypeStrLen = (word32)XSTRLEN(contentTypeStr);
+
+    if(exHdrs){
+        singleCrLfStrLen = (word32)XSTRLEN(singleCrLfStr);
+        exHdrsLen = (word32)XSTRLEN(exHdrs);
+    } else {
+        singleCrLfStrLen = 0;
+        exHdrsLen = 0;
+    }
+
     doubleCrLfStrLen = (word32)XSTRLEN(doubleCrLfStr);
 
     /* determine max length and check it */
@@ -1180,6 +1323,8 @@ int wolfIO_HttpBuildRequest(const char* reqType, const char* domainName,
         reqSzStrLen +
         contentTypeStrLen +
         contentTypeLen +
+        singleCrLfStrLen +
+        exHdrsLen +
         doubleCrLfStrLen +
         1 /* null term */;
     if (maxLen > (word32)bufSize)
@@ -1211,6 +1356,15 @@ int wolfIO_HttpBuildRequest(const char* reqType, const char* domainName,
         XSTRNCPY((char*)buf, contentType, bufSize);
         buf += contentTypeLen; bufSize -= contentTypeLen;
     }
+    if (exHdrsLen > 0)
+    {
+        XSTRNCPY((char *)buf, singleCrLfStr, bufSize);
+        buf += singleCrLfStrLen;
+        bufSize -= singleCrLfStrLen;
+        XSTRNCPY((char *)buf, exHdrs, bufSize);
+        buf += exHdrsLen;
+        bufSize -= exHdrsLen;
+    }
     XSTRNCPY((char*)buf, doubleCrLfStr, bufSize);
     buf += doubleCrLfStrLen;
 
@@ -1228,8 +1382,9 @@ int wolfIO_HttpBuildRequest(const char* reqType, const char* domainName,
 int wolfIO_HttpBuildRequestOcsp(const char* domainName, const char* path,
                                     int ocspReqSz, byte* buf, int bufSize)
 {
-    return wolfIO_HttpBuildRequest("POST", domainName, path, (int)XSTRLEN(path),
-        ocspReqSz, "application/ocsp-request", buf, bufSize);
+    const char *cacheCtl = "Cache-Control: no-cache";
+    return wolfIO_HttpBuildRequest_ex("POST", domainName, path, (int)XSTRLEN(path),
+        ocspReqSz, "application/ocsp-request", cacheCtl, buf, bufSize);
 }
 
 /* return: >0 OCSP Response Size
@@ -1250,7 +1405,7 @@ int wolfIO_HttpProcessResponseOcsp(int sfd, byte** respBuf,
 int EmbedOcspLookup(void* ctx, const char* url, int urlSz,
                         byte* ocspReqBuf, int ocspReqSz, byte** ocspRespBuf)
 {
-    SOCKET_T sfd = 0;
+    SOCKET_T sfd = SOCKET_INVALID;
     word16   port;
     int      ret = -1;
 #ifdef WOLFSSL_SMALL_STACK
@@ -1266,7 +1421,8 @@ int EmbedOcspLookup(void* ctx, const char* url, int urlSz,
     if (path == NULL)
         return MEMORY_E;
 
-    domainName = (char*)XMALLOC(MAX_URL_ITEM_SIZE, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    domainName = (char*)XMALLOC(MAX_URL_ITEM_SIZE, NULL,
+            DYNAMIC_TYPE_TMP_BUFFER);
     if (domainName == NULL) {
         XFREE(path, NULL, DYNAMIC_TYPE_TMP_BUFFER);
         return MEMORY_E;
@@ -1296,7 +1452,7 @@ int EmbedOcspLookup(void* ctx, const char* url, int urlSz,
                                                             httpBuf, httpBufSz);
 
             ret = wolfIO_TcpConnect(&sfd, domainName, port, io_timeout_sec);
-            if ((ret != 0) || (sfd < 0)) {
+            if (ret != 0) {
                 WOLFSSL_MSG("OCSP Responder connection failed");
             }
             else if (wolfIO_Send(sfd, (char*)httpBuf, httpBufSz, 0) !=
@@ -1311,8 +1467,8 @@ int EmbedOcspLookup(void* ctx, const char* url, int urlSz,
                 ret = wolfIO_HttpProcessResponseOcsp(sfd, ocspRespBuf, httpBuf,
                                                  HTTP_SCRATCH_BUFFER_SIZE, ctx);
             }
-
-            CloseSocket(sfd);
+            if (sfd != SOCKET_INVALID)
+                CloseSocket(sfd);
             XFREE(httpBuf, ctx, DYNAMIC_TYPE_OCSP);
         }
     }
@@ -1341,8 +1497,9 @@ void EmbedOcspRespFree(void* ctx, byte *resp)
 int wolfIO_HttpBuildRequestCrl(const char* url, int urlSz,
     const char* domainName, byte* buf, int bufSize)
 {
-    return wolfIO_HttpBuildRequest("GET", domainName, url, urlSz, 0, "",
-        buf, bufSize);
+    const char *cacheCtl = "Cache-Control: no-cache";
+    return wolfIO_HttpBuildRequest_ex("GET", domainName, url, urlSz, 0, "",
+                                   cacheCtl, buf, bufSize);
 }
 
 int wolfIO_HttpProcessResponseCrl(WOLFSSL_CRL* crl, int sfd, byte* httpBuf,
@@ -1369,7 +1526,7 @@ int wolfIO_HttpProcessResponseCrl(WOLFSSL_CRL* crl, int sfd, byte* httpBuf,
 
 int EmbedCrlLookup(WOLFSSL_CRL* crl, const char* url, int urlSz)
 {
-    SOCKET_T sfd = 0;
+    SOCKET_T sfd = SOCKET_INVALID;
     word16   port;
     int      ret = -1;
 #ifdef WOLFSSL_SMALL_STACK
@@ -1401,7 +1558,7 @@ int EmbedCrlLookup(WOLFSSL_CRL* crl, const char* url, int urlSz)
                 httpBuf, httpBufSz);
 
             ret = wolfIO_TcpConnect(&sfd, domainName, port, io_timeout_sec);
-            if ((ret != 0) || (sfd < 0)) {
+            if (ret != 0) {
                 WOLFSSL_MSG("CRL connection failed");
             }
             else if (wolfIO_Send(sfd, (char*)httpBuf, httpBufSz, 0)
@@ -1412,8 +1569,8 @@ int EmbedCrlLookup(WOLFSSL_CRL* crl, const char* url, int urlSz)
                 ret = wolfIO_HttpProcessResponseCrl(crl, sfd, httpBuf,
                                                       HTTP_SCRATCH_BUFFER_SIZE);
             }
-
-            CloseSocket(sfd);
+            if (sfd != SOCKET_INVALID)
+                CloseSocket(sfd);
             XFREE(httpBuf, crl->heap, DYNAMIC_TYPE_CRL);
         }
     }
@@ -1430,37 +1587,67 @@ int EmbedCrlLookup(WOLFSSL_CRL* crl, const char* url, int urlSz)
 
 
 
-WOLFSSL_API void wolfSSL_CTX_SetIORecv(WOLFSSL_CTX *ctx, CallbackIORecv CBIORecv)
+void wolfSSL_CTX_SetIORecv(WOLFSSL_CTX *ctx, CallbackIORecv CBIORecv)
 {
-    ctx->CBIORecv = CBIORecv;
+    if (ctx) {
+        ctx->CBIORecv = CBIORecv;
     #ifdef OPENSSL_EXTRA
-    ctx->cbioFlag |= WOLFSSL_CBIO_RECV;
+        ctx->cbioFlag |= WOLFSSL_CBIO_RECV;
     #endif
+    }
 }
 
 
-WOLFSSL_API void wolfSSL_CTX_SetIOSend(WOLFSSL_CTX *ctx, CallbackIOSend CBIOSend)
+void wolfSSL_CTX_SetIOSend(WOLFSSL_CTX *ctx, CallbackIOSend CBIOSend)
 {
-    ctx->CBIOSend = CBIOSend;
+    if (ctx) {
+        ctx->CBIOSend = CBIOSend;
     #ifdef OPENSSL_EXTRA
-    ctx->cbioFlag |= WOLFSSL_CBIO_SEND;
+        ctx->cbioFlag |= WOLFSSL_CBIO_SEND;
     #endif
+    }
 }
 
 
-WOLFSSL_API void wolfSSL_SetIOReadCtx(WOLFSSL* ssl, void *rctx)
+/* sets the IO callback to use for receives at WOLFSSL level */
+void wolfSSL_SSLSetIORecv(WOLFSSL *ssl, CallbackIORecv CBIORecv)
 {
-    ssl->IOCB_ReadCtx = rctx;
+    if (ssl) {
+        ssl->CBIORecv = CBIORecv;
+    #ifdef OPENSSL_EXTRA
+        ssl->cbioFlag |= WOLFSSL_CBIO_RECV;
+    #endif
+    }
 }
 
 
-WOLFSSL_API void wolfSSL_SetIOWriteCtx(WOLFSSL* ssl, void *wctx)
+/* sets the IO callback to use for sends at WOLFSSL level */
+void wolfSSL_SSLSetIOSend(WOLFSSL *ssl, CallbackIOSend CBIOSend)
 {
-    ssl->IOCB_WriteCtx = wctx;
+    if (ssl) {
+        ssl->CBIOSend = CBIOSend;
+    #ifdef OPENSSL_EXTRA
+        ssl->cbioFlag |= WOLFSSL_CBIO_SEND;
+    #endif
+    }
 }
 
 
-WOLFSSL_API void* wolfSSL_GetIOReadCtx(WOLFSSL* ssl)
+void wolfSSL_SetIOReadCtx(WOLFSSL* ssl, void *rctx)
+{
+    if (ssl)
+        ssl->IOCB_ReadCtx = rctx;
+}
+
+
+void wolfSSL_SetIOWriteCtx(WOLFSSL* ssl, void *wctx)
+{
+    if (ssl)
+        ssl->IOCB_WriteCtx = wctx;
+}
+
+
+void* wolfSSL_GetIOReadCtx(WOLFSSL* ssl)
 {
     if (ssl)
         return ssl->IOCB_ReadCtx;
@@ -1469,7 +1656,7 @@ WOLFSSL_API void* wolfSSL_GetIOReadCtx(WOLFSSL* ssl)
 }
 
 
-WOLFSSL_API void* wolfSSL_GetIOWriteCtx(WOLFSSL* ssl)
+void* wolfSSL_GetIOWriteCtx(WOLFSSL* ssl)
 {
     if (ssl)
         return ssl->IOCB_WriteCtx;
@@ -1478,33 +1665,37 @@ WOLFSSL_API void* wolfSSL_GetIOWriteCtx(WOLFSSL* ssl)
 }
 
 
-WOLFSSL_API void wolfSSL_SetIOReadFlags(WOLFSSL* ssl, int flags)
+void wolfSSL_SetIOReadFlags(WOLFSSL* ssl, int flags)
 {
-    ssl->rflags = flags;
+    if (ssl)
+        ssl->rflags = flags;
 }
 
 
-WOLFSSL_API void wolfSSL_SetIOWriteFlags(WOLFSSL* ssl, int flags)
+void wolfSSL_SetIOWriteFlags(WOLFSSL* ssl, int flags)
 {
-    ssl->wflags = flags;
+    if (ssl)
+        ssl->wflags = flags;
 }
 
 
 #ifdef WOLFSSL_DTLS
 
-WOLFSSL_API void wolfSSL_CTX_SetGenCookie(WOLFSSL_CTX* ctx, CallbackGenCookie cb)
+void wolfSSL_CTX_SetGenCookie(WOLFSSL_CTX* ctx, CallbackGenCookie cb)
 {
-    ctx->CBIOCookie = cb;
+    if (ctx)
+        ctx->CBIOCookie = cb;
 }
 
 
-WOLFSSL_API void wolfSSL_SetCookieCtx(WOLFSSL* ssl, void *ctx)
+void wolfSSL_SetCookieCtx(WOLFSSL* ssl, void *ctx)
 {
-    ssl->IOCB_CookieCtx = ctx;
+    if (ssl)
+        ssl->IOCB_CookieCtx = ctx;
 }
 
 
-WOLFSSL_API void* wolfSSL_GetCookieCtx(WOLFSSL* ssl)
+void* wolfSSL_GetCookieCtx(WOLFSSL* ssl)
 {
     if (ssl)
         return ssl->IOCB_CookieCtx;
@@ -1514,15 +1705,17 @@ WOLFSSL_API void* wolfSSL_GetCookieCtx(WOLFSSL* ssl)
 
 #ifdef WOLFSSL_SESSION_EXPORT
 
-WOLFSSL_API void wolfSSL_CTX_SetIOGetPeer(WOLFSSL_CTX* ctx, CallbackGetPeer cb)
+void wolfSSL_CTX_SetIOGetPeer(WOLFSSL_CTX* ctx, CallbackGetPeer cb)
 {
-    ctx->CBGetPeer = cb;
+    if (ctx)
+        ctx->CBGetPeer = cb;
 }
 
 
-WOLFSSL_API void wolfSSL_CTX_SetIOSetPeer(WOLFSSL_CTX* ctx, CallbackSetPeer cb)
+void wolfSSL_CTX_SetIOSetPeer(WOLFSSL_CTX* ctx, CallbackSetPeer cb)
 {
-    ctx->CBSetPeer = cb;
+    if (ctx)
+        ctx->CBSetPeer = cb;
 }
 
 #endif /* WOLFSSL_SESSION_EXPORT */
@@ -1801,12 +1994,11 @@ int MicriumSendTo(WOLFSSL* ssl, char *buf, int sz, void *ctx)
     WOLFSSL_DTLS_CTX* dtlsCtx = (WOLFSSL_DTLS_CTX*)ctx;
     NET_SOCK_ID sd = dtlsCtx->wfd;
     NET_SOCK_RTN_CODE ret;
-    int len = sz;
     NET_ERR err;
 
     WOLFSSL_ENTER("MicriumSendTo()");
 
-    ret = NetSock_TxDataTo(sd, &buf[sz - len], len, ssl->wflags,
+    ret = NetSock_TxDataTo(sd, buf, sz, ssl->wflags,
                            (NET_SOCK_ADDR*)dtlsCtx->peer.sa,
                            (NET_SOCK_ADDR_LEN)dtlsCtx->peer.sz,
                            &err);
@@ -1895,8 +2087,8 @@ void mynewt_ctx_clear(void *ctx) {
 /* return Mynewt_Ctx instance */
 void* mynewt_ctx_new() {
     int rc = 0;
-    Mynewt_Ctx *mynewt_ctx = NULL;
-    int mem_buf_count = MYNEWT_VAL(WOLFSSL_MNSOCK_MEM_BUF_COUNT);;
+    Mynewt_Ctx *mynewt_ctx;
+    int mem_buf_count = MYNEWT_VAL(WOLFSSL_MNSOCK_MEM_BUF_COUNT);
     int mem_buf_size = MYNEWT_VAL(WOLFSSL_MNSOCK_MEM_BUF_SIZE);
     int mempool_bytes = OS_MEMPOOL_BYTES(mem_buf_count, mem_buf_size);
 
@@ -1905,7 +2097,7 @@ void* mynewt_ctx_new() {
     if(!mynewt_ctx) return NULL;
 
     XMEMSET(mynewt_ctx, 0, sizeof(Mynewt_Ctx));
-    mynewt_ctx->mnMemBuffer = XMALLOC(mempool_bytes, 0, 0);
+    mynewt_ctx->mnMemBuffer = (void *)XMALLOC(mempool_bytes, 0, 0);
     if(!mynewt_ctx->mnMemBuffer) {
         mynewt_ctx_clear((void*)mynewt_ctx);
         return NULL;
@@ -1956,7 +2148,7 @@ int Mynewt_Receive(WOLFSSL *ssl, char *buf, int sz, void *ctx)
     struct mn_sockaddr_in from;
     struct os_mbuf *m;
     int read_sz = 0;
-    uint16_t total;
+    word16 total;
 
     if (mynewt_ctx == NULL || mynewt_ctx->mnSocket == NULL) {
         WOLFSSL_MSG("Mynewt Recv NULL parameters");
@@ -2032,7 +2224,7 @@ int Mynewt_Send(WOLFSSL* ssl, char *buf, int sz, void *ctx)
 {
     Mynewt_Ctx *mynewt_ctx = (Mynewt_Ctx*)ctx;
     int rc = 0;
-    struct os_mbuf *m = NULL;
+    struct os_mbuf *m;
     int write_sz = 0;
     m = os_msys_get_pkthdr(sz, 0);
     if (!m) {
@@ -2067,5 +2259,184 @@ void wolfSSL_SetIO_Mynewt(WOLFSSL* ssl, struct mn_socket* mnSocket, struct mn_so
 }
 
 #endif /* defined(WOLFSSL_APACHE_MYNEWT) && !defined(WOLFSSL_LWIP) */
+
+#ifdef WOLFSSL_UIP
+#include <uip.h>
+#include <stdio.h>
+
+/* uIP TCP/IP port, using the native tcp/udp socket api.
+ * TCP and UDP are currently supported with the callbacks below.
+ *
+ */
+/* The uIP tcp send callback
+ * return : bytes sent, or error
+ */
+int uIPSend(WOLFSSL* ssl, char* buf, int sz, void* _ctx)
+{
+    uip_wolfssl_ctx *ctx = (struct uip_wolfssl_ctx *)_ctx;
+    int ret;
+    unsigned int max_sendlen;
+    int total_written = 0;
+    (void)ssl;
+    do {
+        unsigned int bytes_left = sz - total_written;
+        max_sendlen = tcp_socket_max_sendlen(&ctx->conn.tcp);
+        if (bytes_left > max_sendlen) {
+            printf("Send limited by buffer\r\n");
+            bytes_left = max_sendlen;
+        }
+        if (bytes_left == 0) {
+            printf("Buffer full!\r\n");
+            break;
+        }
+        ret = tcp_socket_send(&ctx->conn.tcp, (unsigned char *)buf + total_written, bytes_left);
+        if (ret <= 0)
+            break;
+        total_written += ret;
+    } while(total_written < sz);
+    if (total_written == 0)
+        return WOLFSSL_CBIO_ERR_WANT_WRITE;
+    return total_written;
+}
+
+int uIPSendTo(WOLFSSL* ssl, char* buf, int sz, void* _ctx)
+{
+    uip_wolfssl_ctx *ctx = (struct uip_wolfssl_ctx *)_ctx;
+    int ret = 0;
+    (void)ssl;
+    ret = udp_socket_sendto(&ctx->conn.udp, (unsigned char *)buf, sz, &ctx->peer_addr, ctx->peer_port );
+    if (ret == 0)
+        return WOLFSSL_CBIO_ERR_WANT_WRITE;
+    return ret;
+}
+
+/* The uIP uTCP/IP receive callback
+ *  return : nb bytes read, or error
+ */
+int uIPReceive(WOLFSSL *ssl, char *buf, int sz, void *_ctx)
+{
+    uip_wolfssl_ctx *ctx = (uip_wolfssl_ctx *)_ctx;
+    if (!ctx || !ctx->ssl_rx_databuf)
+        return -1;
+    (void)ssl;
+    if (ctx->ssl_rb_len > 0) {
+        if (sz > ctx->ssl_rb_len - ctx->ssl_rb_off)
+            sz = ctx->ssl_rb_len - ctx->ssl_rb_off;
+        XMEMCPY(buf, ctx->ssl_rx_databuf + ctx->ssl_rb_off, sz);
+        ctx->ssl_rb_off += sz;
+        if (ctx->ssl_rb_off >= ctx->ssl_rb_len) {
+            ctx->ssl_rb_len = 0;
+            ctx->ssl_rb_off = 0;
+        }
+        return sz;
+    } else {
+        return WOLFSSL_CBIO_ERR_WANT_READ;
+    }
+}
+
+/* uIP DTLS Generate Cookie callback
+ *  return : number of bytes copied into buf, or error
+ */
+int uIPGenerateCookie(WOLFSSL* ssl, byte *buf, int sz, void *_ctx)
+{
+    uip_wolfssl_ctx *ctx = (uip_wolfssl_ctx *)_ctx;
+    byte token[32];
+    byte digest[WC_SHA_DIGEST_SIZE];
+    int  ret = 0;
+    XMEMSET(token, 0, sizeof(token));
+    XMEMCPY(token, &ctx->peer_addr, sizeof(uip_ipaddr_t));
+    XMEMCPY(token + sizeof(uip_ipaddr_t), &ctx->peer_port, sizeof(word16));
+    ret = wc_ShaHash(token, sizeof(uip_ipaddr_t) + sizeof(word16), digest);
+    if (ret != 0)
+        return ret;
+    if (sz > WC_SHA_DIGEST_SIZE)
+        sz = WC_SHA_DIGEST_SIZE;
+    XMEMCPY(buf, digest, sz);
+    return sz;
+}
+
+#endif /* WOLFSSL_UIP */
+
+#ifdef WOLFSSL_GNRC
+
+#include <net/sock.h>
+#include <net/sock/tcp.h>
+#include <stdio.h>
+
+/* GNRC TCP/IP port, using the native tcp/udp socket api.
+ * TCP and UDP are currently supported with the callbacks below.
+ *
+ */
+/* The GNRC tcp send callback
+ * return : bytes sent, or error
+ */
+
+int GNRC_SendTo(WOLFSSL* ssl, char* buf, int sz, void* _ctx)
+{
+    sock_tls_t *ctx = (sock_tls_t *)_ctx;
+    int ret = 0;
+    (void)ssl;
+    if (!ctx)
+        return WOLFSSL_CBIO_ERR_GENERAL;
+    ret = sock_udp_send(&ctx->conn.udp, (unsigned char *)buf, sz, &ctx->peer_addr);
+    if (ret == 0)
+        return WOLFSSL_CBIO_ERR_WANT_WRITE;
+    return ret;
+}
+
+/* The GNRC TCP/IP receive callback
+ *  return : nb bytes read, or error
+ */
+int GNRC_ReceiveFrom(WOLFSSL *ssl, char *buf, int sz, void *_ctx)
+{
+    sock_udp_ep_t ep;
+    int ret;
+    word32 timeout = wolfSSL_dtls_get_current_timeout(ssl) * 1000000;
+    sock_tls_t *ctx = (sock_tls_t *)_ctx;
+    if (!ctx)
+        return WOLFSSL_CBIO_ERR_GENERAL;
+    (void)ssl;
+    if (wolfSSL_get_using_nonblock(ctx->ssl)) {
+        timeout = 0;
+    }
+    ret = sock_udp_recv(&ctx->conn.udp, buf, sz, timeout, &ep);
+    if (ret > 0) {
+        if (ctx->peer_addr.port == 0)
+            XMEMCPY(&ctx->peer_addr, &ep, sizeof(sock_udp_ep_t));
+    }
+    if (ret == -ETIMEDOUT) {
+        return WOLFSSL_CBIO_ERR_WANT_READ;
+    }
+    return ret;
+}
+
+/* GNRC DTLS Generate Cookie callback
+ *  return : number of bytes copied into buf, or error
+ */
+#define GNRC_MAX_TOKEN_SIZE (32)
+int GNRC_GenerateCookie(WOLFSSL* ssl, byte *buf, int sz, void *_ctx)
+{
+    sock_tls_t *ctx = (sock_tls_t *)_ctx;
+    if (!ctx)
+        return WOLFSSL_CBIO_ERR_GENERAL;
+    byte token[GNRC_MAX_TOKEN_SIZE];
+    byte digest[WC_SHA_DIGEST_SIZE];
+    int  ret = 0;
+    size_t token_size = sizeof(sock_udp_ep_t);
+    (void)ssl;
+    if (token_size > GNRC_MAX_TOKEN_SIZE)
+        token_size = GNRC_MAX_TOKEN_SIZE;
+    XMEMSET(token, 0, GNRC_MAX_TOKEN_SIZE);
+    XMEMCPY(token, &ctx->peer_addr, token_size);
+    ret = wc_ShaHash(token, token_size, digest);
+    if (ret != 0)
+        return ret;
+    if (sz > WC_SHA_DIGEST_SIZE)
+        sz = WC_SHA_DIGEST_SIZE;
+    XMEMCPY(buf, digest, sz);
+    return sz;
+}
+
+#endif /* WOLFSSL_GNRC */
 
 #endif /* WOLFCRYPT_ONLY */

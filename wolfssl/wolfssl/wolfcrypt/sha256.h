@@ -1,6 +1,6 @@
 /* sha256.h
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -24,7 +24,6 @@
 */
 
 
-/* code submitted by raphael.huck@efixo.com */
 
 #ifndef WOLF_CRYPT_SHA256_H
 #define WOLF_CRYPT_SHA256_H
@@ -80,10 +79,22 @@
 #ifdef WOLFSSL_ASYNC_CRYPT
     #include <wolfssl/wolfcrypt/async.h>
 #endif
+#if defined(WOLFSSL_DEVCRYPTO) && defined(WOLFSSL_DEVCRYPTO_HASH)
+    #include <wolfssl/wolfcrypt/port/devcrypto/wc_devcrypto.h>
+#endif
+#if defined(WOLFSSL_ESP32WROOM32_CRYPT)
+    #include "wolfssl/wolfcrypt/port/Espressif/esp32-crypt.h"
+#endif
+#if defined(WOLFSSL_CRYPTOCELL)
+    #include <wolfssl/wolfcrypt/port/arm/cryptoCell.h>
+#endif
+#if defined(WOLFSSL_SILABS_SE_ACCEL)
+    #include <wolfssl/wolfcrypt/port/silabs/silabs_hash.h>
+#endif
 
 #if defined(_MSC_VER)
     #define SHA256_NOINLINE __declspec(noinline)
-#elif defined(__GNUC__)
+#elif defined(__IAR_SYSTEMS_ICC__) || defined(__GNUC__)
     #define SHA256_NOINLINE __attribute__((noinline))
 #else
     #define SHA256_NOINLINE
@@ -115,13 +126,23 @@ enum {
     #include "wolfssl/wolfcrypt/port/caam/wolfcaam_sha.h"
 #elif defined(WOLFSSL_AFALG_HASH)
     #include "wolfssl/wolfcrypt/port/af_alg/afalg_hash.h"
+#elif defined(WOLFSSL_RENESAS_TSIP_CRYPT) && \
+   !defined(NO_WOLFSSL_RENESAS_TSIP_CRYPT_HASH)
+    #include "wolfssl/wolfcrypt/port/Renesas/renesas-tsip-crypt.h"
+#elif defined(WOLFSSL_PSOC6_CRYPTO)
+    #include "wolfssl/wolfcrypt/port/cypress/psoc6_crypto.h"
+#elif defined(WOLFSSL_IMXRT_DCP)
+    #include <wolfssl/wolfcrypt/port/nxp/dcp_port.h>
 #else
+
 /* wc_Sha256 digest */
-typedef struct wc_Sha256 {
+struct wc_Sha256 {
 #ifdef FREESCALE_LTC_SHA
     ltc_hash_ctx_t ctx;
-#elif defined(STM32_HASH)
+#elif defined(STM32_HASH_SHA2)
     STM32_HASH_Context stmCtx;
+#elif defined(WOLFSSL_SILABS_SE_ACCEL)
+  wc_silabs_sha_t silabsCtx;
 #else
     /* alignment on digest and buffer speeds up ARMv8 crypto operations */
     ALIGN16 word32  digest[WC_SHA256_DIGEST_SIZE / sizeof(word32)];
@@ -130,8 +151,6 @@ typedef struct wc_Sha256 {
     word32  loLen;     /* length in bytes   */
     word32  hiLen;     /* length in bytes   */
     void*   heap;
-#ifdef USE_INTEL_SPEEDUP
-    const byte* data;
 #endif
 #ifdef WOLFSSL_PIC32MZ_HASH
     hashUpdCache cache; /* cache for updates */
@@ -141,9 +160,33 @@ typedef struct wc_Sha256 {
 #endif /* WOLFSSL_ASYNC_CRYPT */
 #ifdef WOLFSSL_SMALL_STACK_CACHE
     word32* W;
+#endif /* !FREESCALE_LTC_SHA && !STM32_HASH_SHA2 */
+#ifdef WOLFSSL_DEVCRYPTO_HASH
+    WC_CRYPTODEV ctx;
+    byte*  msg;
+    word32 used;
+    word32 len;
 #endif
+#if defined(WOLFSSL_ESP32WROOM32_CRYPT) && \
+   !defined(NO_WOLFSSL_ESP32WROOM32_CRYPT_HASH)
+    WC_ESP32SHA ctx;
 #endif
-} wc_Sha256;
+#ifdef WOLFSSL_CRYPTOCELL
+    CRYS_HASHUserContext_t ctx;
+#endif
+#ifdef WOLF_CRYPTO_CB
+    int    devId;
+    void*  devCtx; /* generic crypto callback context */
+#endif
+#if defined(WOLFSSL_HASH_FLAGS) || defined(WOLF_CRYPTO_CB)
+    word32 flags; /* enum wc_HashFlags in hash.h */
+#endif
+};
+
+#ifndef WC_SHA256_TYPE_DEFINED
+    typedef struct wc_Sha256 wc_Sha256;
+    #define WC_SHA256_TYPE_DEFINED
+#endif
 
 #endif
 
@@ -161,6 +204,11 @@ WOLFSSL_API int wc_Sha256Copy(wc_Sha256* src, wc_Sha256* dst);
 
 #ifdef WOLFSSL_PIC32MZ_HASH
 WOLFSSL_API void wc_Sha256SizeSet(wc_Sha256*, word32);
+#endif
+
+#if defined(WOLFSSL_HASH_FLAGS) || defined(WOLF_CRYPTO_CB)
+    WOLFSSL_API int wc_Sha256SetFlags(wc_Sha256* sha256, word32 flags);
+    WOLFSSL_API int wc_Sha256GetFlags(wc_Sha256* sha256, word32* flags);
 #endif
 
 #ifdef WOLFSSL_SHA224
@@ -185,7 +233,10 @@ enum {
 };
 
 
-typedef wc_Sha256 wc_Sha224;
+#ifndef WC_SHA224_TYPE_DEFINED
+    typedef struct wc_Sha256 wc_Sha224;
+    #define WC_SHA224_TYPE_DEFINED
+#endif
 #endif /* HAVE_FIPS */
 
 WOLFSSL_API int wc_InitSha224(wc_Sha224*);
@@ -196,6 +247,11 @@ WOLFSSL_API void wc_Sha224Free(wc_Sha224*);
 
 WOLFSSL_API int wc_Sha224GetHash(wc_Sha224*, byte*);
 WOLFSSL_API int wc_Sha224Copy(wc_Sha224* src, wc_Sha224* dst);
+
+#if defined(WOLFSSL_HASH_FLAGS) || defined(WOLF_CRYPTO_CB)
+    WOLFSSL_API int wc_Sha224SetFlags(wc_Sha224* sha224, word32 flags);
+    WOLFSSL_API int wc_Sha224GetFlags(wc_Sha224* sha224, word32* flags);
+#endif
 
 #endif /* WOLFSSL_SHA224 */
 

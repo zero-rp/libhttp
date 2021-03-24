@@ -1,6 +1,6 @@
 /* sha.h
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -39,7 +39,14 @@
 
 typedef struct WOLFSSL_SHA_CTX {
     /* big enough to hold wolfcrypt Sha, but check on init */
+#if defined(STM32_HASH)
+    void* holder[(112 + WC_ASYNC_DEV_SIZE + sizeof(STM32_HASH_Context)) / sizeof(void*)];
+#else
     void* holder[(112 + WC_ASYNC_DEV_SIZE) / sizeof(void*)];
+#endif
+    #ifdef WOLF_CRYPTO_CB
+    void* cryptocb_holder[(sizeof(int) + sizeof(void*) + 4) / sizeof(void*)];
+    #endif
 } WOLFSSL_SHA_CTX;
 
 WOLFSSL_API int wolfSSL_SHA_Init(WOLFSSL_SHA_CTX*);
@@ -70,8 +77,8 @@ typedef WOLFSSL_SHA_CTX SHA_CTX;
 #ifdef WOLFSSL_SHA224
 
 /* Using ALIGN16 because when AES-NI is enabled digest and buffer in Sha256
- * struct are 16 byte aligned. Any derefrence to those elements after casting to
- * Sha224, is expected to also be 16 byte aligned addresses.  */
+ * struct are 16 byte aligned. Any dereference to those elements after casting
+ * to Sha224, is expected to also be 16 byte aligned addresses.  */
 typedef struct WOLFSSL_SHA224_CTX {
     /* big enough to hold wolfcrypt Sha224, but check on init */
     ALIGN16 void* holder[(272 + WC_ASYNC_DEV_SIZE) / sizeof(void*)];
@@ -97,8 +104,8 @@ typedef WOLFSSL_SHA224_CTX SHA224_CTX;
 
 
 /* Using ALIGN16 because when AES-NI is enabled digest and buffer in Sha256
- * struct are 16 byte aligned. Any derefrence to those elements after casting to
- * Sha256, is expected to also be 16 byte aligned addresses.  */
+ * struct are 16 byte aligned. Any dereference to those elements after casting
+ * to Sha256, is expected to also be 16 byte aligned addresses.  */
 typedef struct WOLFSSL_SHA256_CTX {
     /* big enough to hold wolfcrypt Sha256, but check on init */
     ALIGN16 void* holder[(272 + WC_ASYNC_DEV_SIZE) / sizeof(void*)];
@@ -119,7 +126,7 @@ typedef WOLFSSL_SHA256_CTX SHA256_CTX;
 #define SHA256_Init   wolfSSL_SHA256_Init
 #define SHA256_Update wolfSSL_SHA256_Update
 #define SHA256_Final  wolfSSL_SHA256_Final
-#if defined(NO_OLD_SHA_NAMES) && !defined(HAVE_FIPS)
+#if defined(NO_OLD_SHA_NAMES) && !defined(HAVE_FIPS) && !defined(HAVE_SELFTEST)
     /* SHA256 is only available in non-fips mode because of SHA256 enum in FIPS
      * build. */
     #define SHA256 wolfSSL_SHA256
@@ -148,7 +155,7 @@ typedef WOLFSSL_SHA384_CTX SHA384_CTX;
 #define SHA384_Init   wolfSSL_SHA384_Init
 #define SHA384_Update wolfSSL_SHA384_Update
 #define SHA384_Final  wolfSSL_SHA384_Final
-#if defined(NO_OLD_SHA_NAMES) && !defined(HAVE_FIPS)
+#if defined(NO_OLD_SHA_NAMES) && !defined(HAVE_FIPS) && !defined(HAVE_SELFTEST)
     /* SHA384 is only available in non-fips mode because of SHA384 enum in FIPS
      * build. */
     #define SHA384 wolfSSL_SHA384
@@ -177,7 +184,7 @@ typedef WOLFSSL_SHA512_CTX SHA512_CTX;
 #define SHA512_Init   wolfSSL_SHA512_Init
 #define SHA512_Update wolfSSL_SHA512_Update
 #define SHA512_Final  wolfSSL_SHA512_Final
-#if defined(NO_OLD_SHA_NAMES) && !defined(HAVE_FIPS)
+#if defined(NO_OLD_SHA_NAMES) && !defined(HAVE_FIPS) && !defined(HAVE_SELFTEST)
     /* SHA512 is only available in non-fips mode because of SHA512 enum in FIPS
      * build. */
     #define SHA512 wolfSSL_SHA512

@@ -1,6 +1,6 @@
 /* aes.h
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -42,12 +42,7 @@
  * OpenSSL compatibility layer. This makes code working with an AES structure
  * to need the size of the structure. */
 typedef struct WOLFSSL_AES_KEY {
-    /* aligned and big enough for Aes from wolfssl/wolfcrypt/aes.h */
-    ALIGN16 void* holder[(360 + WC_ASYNC_DEV_SIZE)/ sizeof(void*)];
-    #ifdef GCM_TABLE
-    /* key-based fast multiplication table. */
-    ALIGN16 void* M0[4096 / sizeof(void*)];
-    #endif /* GCM_TABLE */
+    ALIGN16 void *buf[(sizeof(Aes) / sizeof(void *)) + 1];
 } WOLFSSL_AES_KEY;
 typedef WOLFSSL_AES_KEY AES_KEY;
 

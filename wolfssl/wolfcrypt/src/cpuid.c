@@ -1,6 +1,6 @@
 /* cpuid.c
  *
- * Copyright (C) 2006-2017 wolfSSL Inc.
+ * Copyright (C) 2006-2020 wolfSSL Inc.
  *
  * This file is part of wolfSSL.
  *
@@ -29,7 +29,8 @@
 #include <wolfssl/wolfcrypt/cpuid.h>
 
 #if (defined(WOLFSSL_X86_64_BUILD) || defined(USE_INTEL_SPEEDUP) || \
-     defined(WOLFSSL_AESNI)) && !defined(WOLFSSL_NO_ASM)
+    defined(WOLFSSL_AESNI) || defined(WOLFSSL_SP_X86_64_ASM)) && \
+    !defined(WOLFSSL_NO_ASM)
     /* Each platform needs to query info type 1 from cpuid to see if aesni is
      * supported. Also, let's setup a macro for proper linkage w/o ABI conflicts
      */
@@ -95,8 +96,9 @@
             if (cpuid_flag(7, 0, EBX,  8)) { cpuid_flags |= CPUID_BMI2  ; }
             if (cpuid_flag(1, 0, ECX, 30)) { cpuid_flags |= CPUID_RDRAND; }
             if (cpuid_flag(7, 0, EBX, 18)) { cpuid_flags |= CPUID_RDSEED; }
-            if (cpuid_flag(1, 0, ECX, 26)) { cpuid_flags |= CPUID_AESNI ; }
+            if (cpuid_flag(1, 0, ECX, 25)) { cpuid_flags |= CPUID_AESNI ; }
             if (cpuid_flag(7, 0, EBX, 19)) { cpuid_flags |= CPUID_ADX   ; }
+            if (cpuid_flag(1, 0, ECX, 22)) { cpuid_flags |= CPUID_MOVBE ; }
             cpuid_check = 1;
         }
     }
@@ -106,5 +108,20 @@
         if (!cpuid_check)
             cpuid_set_flags();
         return cpuid_flags;
+    }
+
+    void cpuid_select_flags(word32 flags)
+    {
+        cpuid_flags = flags;
+    }
+
+    void cpuid_set_flag(word32 flag)
+    {
+        cpuid_flags |= flag;
+    }
+
+    void cpuid_clear_flag(word32 flag)
+    {
+        cpuid_flags &= ~flag;
     }
 #endif
