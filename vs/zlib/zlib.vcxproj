@@ -126,7 +126,8 @@
       <PreprocessorDefinitions>_DEBUG;_LIB;_CRT_SECURE_NO_WARNINGS;ASMV;ASMINF;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>../../third_party/zlib/;../../third_party/libcurl/;../../third_party/libcurl/include/</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>
+      </AdditionalIncludeDirectories>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
     <Link>
@@ -187,10 +188,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\third_party\zlib\masmx64\inffas8664.c">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-    </ClCompile>
     <ClCompile Include="..\..\zlib\adler32.c" />
     <ClCompile Include="..\..\zlib\compress.c" />
     <ClCompile Include="..\..\zlib\crc32.c" />
@@ -203,6 +200,7 @@
     <ClCompile Include="..\..\zlib\inffast.c" />
     <ClCompile Include="..\..\zlib\inflate.c" />
     <ClCompile Include="..\..\zlib\inftrees.c" />
+    <ClCompile Include="..\..\zlib\masmx64\inffas8664.c" />
     <ClCompile Include="..\..\zlib\trees.c" />
     <ClCompile Include="..\..\zlib\uncompr.c" />
     <ClCompile Include="..\..\zlib\unzip.c" />
@@ -210,20 +208,6 @@
     <ClCompile Include="..\..\zlib\zutil.c" />
   </ItemGroup>
   <ItemGroup>
-    <CustomBuild Include="..\..\..\third_party\zlib\masmx64\gvmat64.asm">
-      <FileType>Document</FileType>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ml64 /Fo $(IntDir)%(fileName).obj -c -coff -nologo -Zp4 -Cp -Cx /Zi /Zd /W3 %(FullPath)</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)%(fileName).obj</Outputs>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ml64 /Fo $(IntDir)%(fileName).obj -c -coff -nologo -Zp4 -Cp -Cx /Zi /Zd /W3 %(FullPath)</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(IntDir)%(fileName).obj</Outputs>
-    </CustomBuild>
-    <CustomBuild Include="..\..\..\third_party\zlib\masmx64\inffasx64.asm">
-      <FileType>Document</FileType>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ml64 /Fo $(IntDir)%(fileName).obj -c -coff -nologo -Zp4 -Cp -Cx /Zi /Zd /W3 %(FullPath)</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(IntDir)%(fileName).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(IntDir)%(fileName).obj</Outputs>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ml64 /Fo $(IntDir)%(fileName).obj -c -coff -nologo -Zp4 -Cp -Cx /Zi /Zd /W3 %(FullPath)</Command>
-    </CustomBuild>
     <CustomBuild Include="..\..\..\third_party\zlib\masmx86\match686.asm">
       <FileType>Document</FileType>
       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">ml /Fo $(IntDir)%(fileName).obj -c -coff -nologo -Zp4 -Cp -Cx /Zi /Zd /W3 %(FullPath)</Command>
@@ -232,6 +216,19 @@
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(IntDir)%(fileName).obj</Outputs>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="..\..\zlib\masmx64\gvmat64.asm">
+      <FileType>Document</FileType>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ml64 /Fo $(IntDir)%(fileName).obj -c -coff -nologo -Zp4 -Cp -Cx /Zi /Zd /W3 %(FullPath)</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(IntDir)%(fileName).obj</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="..\..\zlib\masmx64\inffasx64.asm">
+      <FileType>Document</FileType>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ml64 /Fo $(IntDir)%(fileName).obj -c -coff -nologo -Zp4 -Cp -Cx /Zi /Zd /W3 %(FullPath)</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(IntDir)%(fileName).obj</Outputs>
     </CustomBuild>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
